@@ -18,6 +18,7 @@ VLAN discovery is Milestone 2.
 
 | Document | Covers |
 |---|---|
+| **[docs/handoff.md](docs/handoff.md)** | **Start here when resuming** — current state, how to restart the environment, the Milestone 2 plan |
 | [docs/architecture.md](docs/architecture.md) | Layering, dependency rules, request flow, extension points |
 | [docs/schema.md](docs/schema.md) | Tables, columns, constraints, migration policy |
 | [docs/api.md](docs/api.md) | Endpoints, auth, scopes, response and error contracts |
