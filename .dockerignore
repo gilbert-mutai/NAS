@@ -1,0 +1,22 @@
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+tests/
+docs/
+
+# Never bake secrets into an image
+.env
+.env.*
+credentials.yaml
+credentials.*.yaml
+*.pem
+*.key

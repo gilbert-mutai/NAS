@@ -1,0 +1,191 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ── Fast feedback: lint, format and types. No services needed. ──────────────
+  static:
+    name: Lint & Types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      - name: ruff (lint)
+        run: ruff check . --output-format=github
+
+      - name: ruff (format)
+        run: ruff format --check .
+
+      - name: mypy (strict)
+        run: mypy
+
+  # ── Unit + API tests. Deliberately requires no database: the repository ─────
+  # ── Protocols let the whole HTTP surface be tested with in-memory fakes. ────
+  test:
+    name: Unit & API Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      - name: pytest
+        run: pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
+
+  # ── Integration tests against real PostgreSQL. Also proves the migrations ──
+  # ── produce the schema the ORM expects, and that downgrade works. ───────────
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: nas_test
+          POSTGRES_USER: nas
+          POSTGRES_PASSWORD: nas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nas -d nas_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      - name: pytest -m integration
+        env:
+          NAS_DATABASE_URL: postgresql+asyncpg://nas:nas@localhost:5432/nas_test
+          NAS_TEST_DATABASE_URL: postgresql+asyncpg://nas:nas@localhost:5432/nas_test
+        run: pytest -m integration
+
+      - name: Assert no drift between migrations and ORM models
+        env:
+          NAS_DATABASE_URL: postgresql+asyncpg://nas:nas@localhost:5432/nas_test
+        run: |
+          nas db upgrade
+          python - <<'PY'
+          import asyncio, sys
+          from alembic.autogenerate import compare_metadata
+          from alembic.migration import MigrationContext
+          from sqlalchemy.ext.asyncio import create_async_engine
+          from nas.core.config import get_settings
+          from nas.db.base import Base
+          from nas.db import models  # noqa: F401
+
+          async def main() -> int:
+              engine = create_async_engine(get_settings().sqlalchemy_url)
+              async with engine.connect() as conn:
+                  diff = await conn.run_sync(lambda c: compare_metadata(
+                      MigrationContext.configure(
+                          c, opts={"compare_type": True, "compare_server_default": True}),
+                      Base.metadata))
+              await engine.dispose()
+              if diff:
+                  print("Schema drift detected between migrations and ORM models:")
+                  for entry in diff:
+                      print("  -", entry)
+                  return 1
+              print("No drift.")
+              return 0
+
+          sys.exit(asyncio.run(main()))
+          PY
+
+  # ── Dependency vulnerability scanning. ──────────────────────────────────────
+  # Bandit-style static checks run in the `static` job: ruff's "S" ruleset is
+  # enabled in pyproject.toml, so they gate every push already.
+  security:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - run: pip install -e "." pip-audit
+
+      - name: pip-audit
+        run: pip-audit --strict --progress-spinner off
+
+  # ── Image build, plus the security properties we care about in the image. ───
+  docker:
+    name: Docker Image
+    runs-on: ubuntu-latest
+    needs: [static, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: false
+          load: true
+          tags: nas:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Assert the container does not run as root
+        run: |
+          uid="$(docker run --rm nas:ci id -u)"
+          echo "container uid: $uid"
+          test "$uid" != "0"
+
+      - name: Assert no secrets were baked into the image
+        run: |
+          if docker run --rm --entrypoint sh nas:ci -c \
+               'ls /app/.env /app/credentials.yaml /app/*.pem /app/*.key' 2>/dev/null; then
+            echo "::error::Secret-bearing file found in the image"
+            exit 1
+          fi
+          echo "No secret files present in the image."
+
+      - name: Assert the application imports and reports its version
+        run: docker run --rm --entrypoint python nas:ci -c "import nas; print(nas.__version__)"

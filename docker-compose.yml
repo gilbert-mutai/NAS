@@ -1,0 +1,79 @@
+# Local development stack.
+#
+# Default (Postgres only — service runs natively in a venv, matching how the CRM
+# is deployed):
+#   docker compose up -d
+#   nas db upgrade && nas serve --reload
+#
+# Full containerised stack (parity check before deploying):
+#   docker compose --profile app up --build
+#
+# Postgres is published on 5434, not 5432, so this never collides with the
+# PostgreSQL instance already serving the CRM on the same machine.
+
+name: nas
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nas-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nas_dev
+      POSTGRES_USER: nas
+      POSTGRES_PASSWORD: nas
+      # Deterministic collation so ordering matches production regardless of the
+      # host's locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nas -d nas_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  nas:
+    profiles: ["app"]
+    build:
+      context: .
+      target: runtime
+    container_name: nas-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The credentials file below is mode 0600 and owned by the host user, so the
+    # container must run as that same UID to read it. Keeping the file at 0600 is
+    # the point — loosening it to 0644 to satisfy the container would defeat the
+    # protection. Start the stack with:
+    #
+    #   NAS_UID=$(id -u) NAS_GID=$(id -g) docker compose --profile app up --build
+    #
+    # The image's own user is 1001 (see Dockerfile); either way the process is
+    # unprivileged, and it writes nothing to the filesystem.
+    user: "${NAS_UID:-1001}:${NAS_GID:-1001}"
+    environment:
+      NAS_ENVIRONMENT: local
+      NAS_LOG_FORMAT: json
+      # Container-internal hostname, not localhost.
+      NAS_DATABASE_URL: postgresql+asyncpg://nas:nas@postgres:5432/nas_dev
+      NAS_CREDENTIALS_FILE: /run/secrets/nas-credentials.yaml
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Mounted read-only at a path outside the image. Credentials are never
+      # baked into the image (see .dockerignore).
+      - ./credentials.yaml:/run/secrets/nas-credentials.yaml:ro
+    command:
+      - sh
+      - -c
+      - "alembic upgrade head && exec uvicorn nas.main:create_app --factory
+         --host 0.0.0.0 --port 8000 --no-access-log"
+
+volumes:
+  postgres_data:
+    name: nas_postgres_data
