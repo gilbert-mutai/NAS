@@ -21,8 +21,11 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from nas.db import models  # noqa: F401 - registers tables on Base.metadata
+from nas.db.base import Base
 from nas.db.session import Database
 from tests.conftest import build_settings
 
@@ -76,16 +79,46 @@ def migrated_database(integration_database_url: str) -> Iterator[str]:
 
 @pytest.fixture
 async def db(migrated_database: str) -> AsyncIterator[Database]:
+    """A live database, emptied after every test.
+
+    Cleanup lives here rather than on the ``session`` fixture because tests that
+    exercise the sync service take ``db`` directly (the service owns its own
+    sessions). Attaching isolation to ``session`` alone let state leak between
+    those tests, which showed up as tests that passed alone and failed in a suite.
+    """
     database = Database(build_settings(database_url=migrated_database))
     try:
         yield database
     finally:
-        await database.dispose()
+        try:
+            await truncate_all(database)
+        finally:
+            await database.dispose()
 
 
 @pytest.fixture
 async def session(db: Database) -> AsyncIterator[AsyncSession]:
-    """A session whose changes are always rolled back, keeping tests isolated."""
+    """A session rolled back at the end of the test.
+
+    Rollback alone is *not* sufficient isolation — application code legitimately
+    commits mid-request (``mark_used`` commits immediately so it does not hold an
+    API-key row lock for the request's lifetime). The ``db`` fixture truncates
+    afterwards, which makes isolation independent of whether the code under test
+    commits.
+    """
     async with db.session_factory() as session:
         yield session
         await session.rollback()
+
+
+async def truncate_all(db: Database) -> None:
+    """Empty every table and reset identity sequences.
+
+    Table list comes from the metadata rather than a hardcoded string, so a new
+    table added in a future migration is cleaned up without anyone remembering to
+    update this.
+    """
+    tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+    async with db.session_factory() as cleanup:
+        await cleanup.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        await cleanup.commit()

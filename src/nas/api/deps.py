@@ -24,10 +24,19 @@ from nas.core.security import Scope
 from nas.db.session import Database
 from nas.domain.entities import ApiKey
 from nas.repositories.api_keys import SqlAlchemyApiKeyRepository
-from nas.repositories.protocols import ApiKeyRepository, SwitchRepository
+from nas.repositories.protocols import (
+    ApiKeyRepository,
+    SwitchRepository,
+    SyncRunRepository,
+    VlanRepository,
+)
 from nas.repositories.switches import SqlAlchemySwitchRepository
+from nas.repositories.sync_runs import SqlAlchemySyncRunRepository
+from nas.repositories.vlans import SqlAlchemyVlanRepository
 from nas.services.auth import AuthenticationService
 from nas.services.switches import SwitchService
+from nas.services.sync import SyncService
+from nas.services.vlans import VlanService
 
 API_KEY_HEADER_NAME = "X-API-Key"
 
@@ -57,11 +66,11 @@ async def get_session(
 ) -> AsyncIterator[AsyncSession]:
     """One session and one transaction per request.
 
-    Commits when the handler returns, rolls back if it raises. Note the
-    consequence for ``api_keys.last_used_at``: on a request that ends in an error
-    the timestamp is rolled back with everything else. The structured access log
-    remains the authoritative record of key usage; ``last_used_at`` is a
-    convenience column reflecting successful calls.
+    Commits when the handler returns, rolls back if it raises.
+
+    Note that ``api_keys.last_used_at`` is *not* part of that transaction: it is
+    committed immediately during authentication so its row lock is not held for
+    the request's lifetime. See SqlAlchemyApiKeyRepository.mark_used.
     """
     async with database.session() as session:
         yield session
@@ -113,3 +122,34 @@ def require_scopes(*scopes: Scope) -> Callable[..., Awaitable[ApiKey]]:
         return api_key
 
     return dependency
+
+
+def get_vlan_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VlanRepository:
+    return SqlAlchemyVlanRepository(session)
+
+
+def get_sync_run_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SyncRunRepository:
+    return SqlAlchemySyncRunRepository(session)
+
+
+def get_vlan_service(
+    repository: Annotated[VlanRepository, Depends(get_vlan_repository)],
+    sync_runs: Annotated[SyncRunRepository, Depends(get_sync_run_repository)],
+) -> VlanService:
+    return VlanService(repository=repository, sync_runs=sync_runs)
+
+
+def get_sync_service(request: Request) -> SyncService:
+    """Return the process-wide SyncService.
+
+    Built once at startup rather than per request: it owns a session *factory*
+    (it holds the advisory lock on one connection while each switch commits on
+    its own) and is shared with the scheduler, so the API and the scheduler
+    contend for the same lock instead of running two independent implementations.
+    """
+    service: SyncService = request.app.state.sync_service
+    return service

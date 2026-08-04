@@ -27,7 +27,8 @@ from nas.core.credentials import CredentialError, build_credential_provider
 from nas.core.logging import configure_logging
 from nas.core.security import Scope, generate_api_key
 from nas.db.session import Database
-from nas.domain.enums import Vendor
+from nas.domain.entities import SyncRun
+from nas.domain.enums import SyncTrigger, Vendor
 from nas.domain.pagination import PageRequest
 from nas.repositories.api_keys import SqlAlchemyApiKeyRepository
 from nas.repositories.protocols import NewApiKey, NewSwitch, SwitchFilters
@@ -358,3 +359,118 @@ def serve(
 
 if __name__ == "__main__":
     app()
+
+
+# ── Sync ──────────────────────────────────────────────────────────────────────
+sync_app = typer.Typer(name="sync", help="Run and inspect synchronisation.", no_args_is_help=True)
+app.add_typer(sync_app)
+
+
+@sync_app.command("run")
+def sync_run(
+    switch: Annotated[
+        list[int] | None,
+        typer.Option(help="Restrict to these switch ids. Repeatable. Omit for all."),
+    ] = None,
+) -> None:
+    """Run a synchronisation now.
+
+    Shares the SyncService and the advisory lock with the API, so this is safe to
+    drive from a systemd timer alongside a running service — set
+    NAS_SYNC_ENABLED=false to use timers instead of the embedded scheduler.
+    """
+    settings = _load_settings()
+
+    async def action(database: Database) -> SyncRun:
+        from nas.core.credentials import build_credential_provider
+        from nas.services.sync import SyncOptions, SyncService
+
+        service = SyncService(
+            session_factory=database.session_factory,
+            credential_provider=build_credential_provider(settings),
+            options=SyncOptions(
+                max_concurrency=settings.sync_max_concurrency,
+                allow_empty_discovery=settings.sync_allow_empty_discovery,
+                connect_timeout=settings.driver_connect_timeout,
+                command_timeout=settings.driver_command_timeout,
+                stale_run_minutes=settings.sync_stale_run_minutes,
+            ),
+        )
+        return await service.run(trigger=SyncTrigger.CLI)
+
+    from nas.services.sync import SyncAlreadyRunningError
+
+    try:
+        run = _run(action)
+    except SyncAlreadyRunningError:
+        typer.secho(
+            "A synchronisation is already in progress. Nothing started.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+
+    colour = {
+        "success": typer.colors.GREEN,
+        "partial": typer.colors.YELLOW,
+        "failed": typer.colors.RED,
+    }.get(run.status.value, typer.colors.WHITE)
+
+    typer.secho(f"\nRun #{run.id} — {run.status.value.upper()}", fg=colour, bold=True)
+    typer.echo(f"  duration : {run.duration_ms} ms")
+    typer.echo(
+        f"  switches : {run.switches_succeeded} ok, {run.switches_failed} failed, "
+        f"{run.switches_skipped} skipped"
+    )
+    typer.echo(
+        f"  vlans    : {run.vlans_created} created, {run.vlans_updated} updated, "
+        f"{run.vlans_unchanged} unchanged, {run.vlans_marked_missing} marked missing"
+    )
+
+    if run.switch_results:
+        header = f"  {'SWITCH':<24} {'OUTCOME':<9} {'DISC':>5} {'NEW':>4} {'UPD':>4} {'MISS':>5}"
+        typer.echo(f"\n{header}")
+        for item in run.switch_results:
+            typer.echo(
+                f"  {item.switch_name:<24} {item.outcome.value:<9} "
+                f"{item.vlans_discovered:>5} {item.vlans_created:>4} "
+                f"{item.vlans_updated:>4} {item.vlans_marked_missing:>5}"
+            )
+            if item.error_message:
+                typer.secho(f"      -> {item.error_message}", fg=typer.colors.RED)
+
+    typer.echo()
+    # Non-zero exit on anything other than a clean run, so a systemd timer or CI
+    # step surfaces the problem instead of silently succeeding.
+    if run.status.value != "success":
+        raise typer.Exit(code=1)
+
+
+@sync_app.command("status")
+def sync_status() -> None:
+    """Show the most recent synchronisation run."""
+
+    async def action(database: Database) -> SyncRun | None:
+        from nas.repositories.sync_runs import SqlAlchemySyncRunRepository
+
+        async with database.session() as session:
+            return await SqlAlchemySyncRunRepository(session).latest()
+
+    run = _run(action)
+    if run is None:
+        typer.echo("No synchronisation has run yet. Start one with: nas sync run")
+        return
+
+    typer.echo(f"Run #{run.id}  status={run.status.value}  trigger={run.trigger.value}")
+    typer.echo(f"  started  : {run.started_at.isoformat()}")
+    typer.echo(f"  finished : {run.finished_at.isoformat() if run.finished_at else '(running)'}")
+    typer.echo(
+        f"  switches : {run.switches_succeeded} ok, {run.switches_failed} failed, "
+        f"{run.switches_skipped} skipped"
+    )
+    typer.echo(
+        f"  vlans    : {run.vlans_created} created, {run.vlans_updated} updated, "
+        f"{run.vlans_marked_missing} marked missing"
+    )
+    if run.error_message:
+        typer.secho(f"  error    : {run.error_message}", fg=typer.colors.RED)

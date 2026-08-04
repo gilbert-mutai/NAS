@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from nas.core.errors import InsufficientScopeError, InvalidApiKeyError, UnauthenticatedError
 from nas.core.logging import get_logger
@@ -16,6 +16,9 @@ logger = get_logger(__name__)
 # the same as one with a known prefix. Prevents the response time from revealing
 # which prefixes exist.
 _DUMMY_HASH = hash_api_key("nas_00000000_unused-placeholder-for-constant-time-compare")
+
+# How stale last_used_at may become before it is rewritten.
+LAST_USED_THROTTLE = timedelta(minutes=5)
 
 
 class AuthenticationService:
@@ -54,9 +57,23 @@ class AuthenticationService:
             logger.info("auth_failed", reason=reason, api_key_name=api_key.name)
             raise InvalidApiKeyError
 
-        await self._api_keys.mark_used(api_key.id, when=now)
+        if self._should_record_usage(api_key, now=now):
+            await self._api_keys.mark_used(api_key.id, when=now)
+
         logger.debug("auth_succeeded", api_key_name=api_key.name)
         return api_key
+
+    def _should_record_usage(self, api_key: ApiKey, *, now: datetime) -> bool:
+        """Throttle ``last_used_at`` writes.
+
+        Updating on every request would mean a write (and a row lock, and WAL) for
+        every read — pure amplification for a column whose purpose is "roughly
+        when was this key last used". The structured access log is the precise
+        record; this column is a convenience.
+        """
+        if api_key.last_used_at is None:
+            return True
+        return (now - api_key.last_used_at) >= LAST_USED_THROTTLE
 
     @staticmethod
     def authorize(api_key: ApiKey, required_scopes: frozenset[str]) -> None:

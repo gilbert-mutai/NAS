@@ -65,14 +65,23 @@ chmod 600 credentials.yaml
 nas db upgrade
 
 # 6. An API key for the CRM. Printed once — copy it now.
-nas apikey create --name crm --scopes switches:read,vlans:read,sync:read
+nas apikey create --name crm --scopes switches:read,vlans:read,sync:read,sync:write
 
 # 7. Register a switch. --credential-ref is a NAME from credentials.yaml, not a password.
 nas switch add --name adc-core-sw1 --hostname 10.20.0.11 \
                --vendor juniper --credential-ref juniper-core \
                --site "ADC NBO" --environment production
 
-# 8. Run it
+# 7b. No switch to hand? Register a mock one — it opens no socket and returns
+#     deterministic VLANs, so the whole pipeline works on a laptop.
+nas switch add --name mock-core --hostname 10.90.0.11 \
+               --vendor mock --credential-ref mock-local --site "ADC NBO"
+
+# 8. Discover VLANs
+nas sync run          # exit code 1 if any switch failed, for systemd timers and CI
+nas sync status
+
+# 9. Run it
 nas serve --reload
 ```
 
@@ -80,9 +89,19 @@ Then:
 
 ```bash
 curl localhost:8000/health
-curl -H "X-API-Key: nas_..." localhost:8000/api/v1/switches
+KEY="nas_..."
+curl -H "X-API-Key: $KEY" localhost:8000/api/v1/switches
+curl -H "X-API-Key: $KEY" "localhost:8000/api/v1/vlans?q=sip"
+
+# The call that replaces an SSH session: is this VLAN free, and if not, who has it?
+curl -H "X-API-Key: $KEY" localhost:8000/api/v1/vlans/lookup/1234
+
 open http://localhost:8000/docs      # Swagger UI
 ```
+
+**On that last call:** `availability` is derived from current records, never stored. Check
+`is_stale` before trusting an `available` verdict — the switches remain authoritative and NAS
+holds a synchronised cache.
 
 ---
 
@@ -103,12 +122,20 @@ nas switch list
 
 nas credentials check     # verifies every switch's credential ref resolves; prints names only
 
+nas sync run                          # sync now. Exit code 1 if any switch failed
+nas sync run --switch 3 --switch 4    # restrict to specific switches
+nas sync status                       # most recent run
+
 nas db upgrade
 nas db downgrade -1
 nas db current
 
 nas serve --host 127.0.0.1 --port 8000 --reload
 ```
+
+`nas sync run` shares the SyncService and the advisory lock with the running API, so it is safe to
+drive from a systemd timer alongside the service. Set `NAS_SYNC_ENABLED=false` to disable the
+embedded scheduler and use timers instead — matching how the CRM schedules its own jobs.
 
 ---
 

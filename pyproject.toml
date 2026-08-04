@@ -21,9 +21,16 @@ dependencies = [
     "structlog>=24.4,<26.0",
     "PyYAML>=6.0,<7.0",
     "typer>=0.15,<1.0",
+    "defusedxml>=0.7,<1.0",
+    "apscheduler>=3.10,<4.0",
 ]
 
 [project.optional-dependencies]
+# Only the Juniper driver needs PyEZ. The core, the reconciliation engine and the
+# whole test suite run without it.
+juniper = [
+    "junos-eznc>=2.7,<3.0",
+]
 dev = [
     # pytest >= 9.0.3: earlier lines carry PYSEC-2026-1845. pytest-asyncio >= 1.4
     # is the first release that supports pytest 9.
@@ -34,6 +41,8 @@ dev = [
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<2.0",
     "types-PyYAML>=6.0,<7.0",
+    "types-defusedxml>=0.7,<1.0",
+    "pip-audit>=2.7,<3.0",
 ]
 
 [project.scripts]
@@ -81,6 +90,17 @@ packages = ["nas"]
 [[tool.mypy.overrides]]
 module = ["nas.db.migrations.*"]
 ignore_errors = true
+
+# Third-party packages that ship no type information. PyEZ and lxml are only
+# imported by the Juniper driver (an optional extra); APScheduler has no
+# py.typed marker. Their call sites are narrowly contained and covered by tests.
+[[tool.mypy.overrides]]
+module = [
+    "jnpr.*",
+    "lxml.*",
+    "apscheduler.*",
+]
+ignore_missing_imports = true
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

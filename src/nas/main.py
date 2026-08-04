@@ -26,6 +26,8 @@ from nas.core.middleware import (
     SecurityHeadersMiddleware,
 )
 from nas.db.session import Database
+from nas.scheduler.runner import SyncScheduler
+from nas.services.sync import SyncOptions, SyncService
 
 logger = get_logger(__name__)
 
@@ -112,6 +114,24 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error("credential_provider_unavailable", error=str(exc))
         app.state.credential_provider = NullCredentialProvider()
 
+    # One SyncService for the process, shared by the API and the scheduler, so both
+    # contend for the same advisory lock rather than running two implementations.
+    app.state.sync_service = SyncService(
+        session_factory=app.state.database.session_factory,
+        credential_provider=app.state.credential_provider,
+        options=SyncOptions(
+            max_concurrency=settings.sync_max_concurrency,
+            allow_empty_discovery=settings.sync_allow_empty_discovery,
+            connect_timeout=settings.driver_connect_timeout,
+            command_timeout=settings.driver_command_timeout,
+            stale_run_minutes=settings.sync_stale_run_minutes,
+        ),
+    )
+
+    scheduler = SyncScheduler(sync_service=app.state.sync_service, settings=settings)
+    app.state.scheduler = scheduler
+    scheduler.start()
+
     logger.info(
         "service_starting",
         version=__version__,
@@ -120,14 +140,26 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         ip_allowlist_entries=len(settings.allowed_ip_ranges),
         trust_proxy_headers=settings.trust_proxy_headers,
         credential_refs=len(app.state.credential_provider.refs()),
+        sync_enabled=settings.sync_enabled,
+        sync_interval_seconds=settings.sync_interval_seconds,
     )
 
     if settings.environment is Environment.LOCAL and not settings.allowed_ip_ranges:
         logger.warning("ip_allowlist_open", detail="Local development only.")
 
+    if settings.sync_allow_empty_discovery:
+        logger.warning(
+            "empty_discovery_allowed",
+            detail=(
+                "A switch reporting zero VLANs will mark all its records missing. "
+                "This disables the mass-removal guard."
+            ),
+        )
+
     try:
         yield
     finally:
+        await scheduler.stop()
         await app.state.database.dispose()
         logger.info("service_stopped")
 

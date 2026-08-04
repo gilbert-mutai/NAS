@@ -78,6 +78,18 @@ class SqlAlchemyApiKeyRepository:
             .execution_options(synchronize_session=False)
         )
         await self._session.execute(stmt)
+        # Commit immediately, and deliberately so.
+        #
+        # This UPDATE takes a row lock on the API key. Left to commit with the rest
+        # of the request, that lock would be held for the request's entire
+        # lifetime — and since every caller sharing a key touches the same row,
+        # all requests using that key would serialise behind the slowest one. A
+        # long POST /sync would stall every other CRM call. Committing here holds
+        # the lock for microseconds instead.
+        #
+        # Safe because authentication runs before any endpoint work, so there is
+        # nothing else pending on this session to commit prematurely.
+        await self._session.commit()
 
     async def revoke(self, name: str) -> bool:
         stmt = (

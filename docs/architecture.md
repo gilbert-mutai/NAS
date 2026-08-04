@@ -162,3 +162,55 @@ reconciliation engine with soft-delete; APScheduler plus a CLI entrypoint sharin
 layer; and the `/vlans`, `/vlans/lookup/{vlan_id}`, `/sync` and `/sync/status` endpoints.
 
 The layering above was chosen so that none of that requires restructuring what exists.
+
+---
+
+## Milestone 2 layers
+
+```
+drivers/                     device-facing, vendor-specific
+├── base.py                  Protocol + normalised DTOs. Imports no vendor library
+├── juniper.py               PyEZ/NETCONF I/O
+├── juniper_parser.py        pure XML -> DTO. No PyEZ import, no I/O
+├── mock.py                  deterministic in-memory device
+└── registry.py              Vendor -> driver. The only file a new vendor touches
+
+sync/reconciler.py           pure diffing. No I/O, no ORM, no driver
+services/sync.py             orchestration: lock, per-switch transactions, attribution
+services/vlans.py            queries + derived availability verdict
+scheduler/runner.py          APScheduler; decides *when*, never *how*
+db/locks.py                  advisory lock primitive
+```
+
+### Where the safety properties live
+
+The milestone's destructive failure mode is "mark VLANs missing when we simply could not read
+the switch". Three separate layers make that hard:
+
+1. **`services/sync.py`** only calls the reconciler *after* `get_vlans()` returns. Any
+   `DriverError` jumps straight to recording a failure, so an unreadable switch produces no plan
+   at all. This is structural, not a conditional that could be edited away.
+2. **`sync/reconciler.py`** refuses to build a plan that would mark *every* active VLAN missing
+   because the device reported none — far more likely a silent read failure than a mass deletion.
+   Overridable via `NAS_SYNC_ALLOW_EMPTY_DISCOVERY`.
+3. **`drivers/base.py`** documents `get_vlans()` as "complete set or raise". A driver returning a
+   partial list would look like deletions, so partial returns are a contract violation.
+
+### Why the parser is a separate pure module
+
+`juniper_parser.py` takes XML text and returns DTOs. No PyEZ, no sockets. That makes the riskiest
+part of the Juniper integration — reading real device output across Junos versions — testable
+against recorded fixtures on a laptop and in CI, with the optional dependency absent.
+
+### Transaction shape
+
+**One transaction per switch, not per run.** A run that fails on switch four keeps the work done
+for switches one to three. Combined with `sync_run_switches` rows, a partial run is both durable
+and explainable. The advisory lock is held on its own connection for the whole run while each
+switch commits independently.
+
+### Why PyEZ is dispatched to a thread
+
+PyEZ is synchronous. Every call goes through `anyio.to_thread.run_sync`; blocking the event loop
+would stall every in-flight HTTP request while a switch is polled. Switches are polled
+concurrently, bounded by `NAS_SYNC_MAX_CONCURRENCY`.

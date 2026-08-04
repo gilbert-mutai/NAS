@@ -218,3 +218,66 @@ same argument applies to the request-id middleware and the auth dependency.
 
 Rate limiting and the `audit_log` table remain in Milestone 4 — they are additive, and the IP
 allowlist plus scoped keys already bound the caller set meanwhile.
+
+---
+
+## Milestone 2 decisions
+
+### The parser is a separate pure module
+
+`juniper_parser.py` takes XML text and returns DTOs — no PyEZ import, no I/O. The riskiest part of
+the Juniper integration is reading real device output across Junos releases, and this makes it
+testable against recorded fixtures with the optional dependency absent. Two schemas are handled
+(ELS `l2ng-l2ald-vlan-instance-group`, legacy `vlan`), matched by *local* element name so
+namespaces are irrelevant.
+
+Odd entries — no tag, out-of-range tag, non-numeric tag — are **skipped with a warning, not
+fatal**. Failing the whole read over one strange VLAN would leave the switch unreadable, which
+freezes its data. `defusedxml` is used because device output is untrusted input.
+
+### Availability is derived, never stored
+
+There is no `is_available` column. A VLAN is available when no active record exists in scope. A
+stored flag would drift from the switches — precisely the failure this service exists to prevent.
+Tags 0 and 4095 report `reserved` rather than `available`, because reporting them as free would
+invite an engineer to try assigning one.
+
+The lookup also returns `is_stale` and `data_as_of`. NAS is a synchronised cache; the switches
+remain authoritative. Consumers need to know when not to trust an `available` verdict.
+
+### Removals are soft, and guarded twice
+
+`state` moves `active → missing` with history preserved. Beyond that, the reconciler **refuses**
+to mark every active VLAN missing because a device reported none — far more likely a silent read
+failure than a genuine mass deletion. `NAS_SYNC_ALLOW_EMPTY_DISCOVERY=true` overrides it for a
+switch that really has no VLANs.
+
+### One transaction per switch
+
+Not one per run. A run failing on switch four keeps switches one to three. With
+`sync_run_switches` rows, a partial run is durable *and* explainable. `partial` is a first-class
+status for exactly this reason.
+
+### APScheduler, not Celery + Redis
+
+The brief asked for BullMQ or equivalent. A single periodic job does not justify a broker and a
+second daemon to operate. Critically, the **advisory lock** — not a queue — is what prevents
+overlapping runs, and it works across every entry point: the embedded scheduler, an HTTP POST, and
+a `nas sync run` fired by hand or by a systemd timer on another host. A queue would only serialise
+work that went through the queue. When NAS needs retries, fan-out or a real work queue,
+`scheduler/runner.py` is the only module that changes.
+
+### `pg_try_advisory_lock`, not `pg_advisory_lock`
+
+A second sync request should be told "one is already running" (409), not silently queue behind it.
+Session-scoped rather than transaction-scoped, so it spans the whole run; PostgreSQL releases it
+automatically if the connection dies, so a crashed process cannot wedge syncing.
+
+### API-key usage tracking is committed immediately and throttled
+
+`mark_used` UPDATEs the `api_keys` row, taking a row lock. Committing it with the rest of the
+request held that lock for the request's entire lifetime — and since every caller sharing a key
+touches the same row, **all requests using that key serialised behind the slowest one**. A long
+`POST /sync` stalled every other CRM call. It now commits immediately (microseconds of lock) and is
+only rewritten when the stored timestamp is older than five minutes, so reads do not each cost an
+UPDATE. The structured access log remains the precise record of key usage.

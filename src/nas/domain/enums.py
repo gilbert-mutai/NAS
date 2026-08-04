@@ -62,3 +62,72 @@ class ReachabilityState(StrEnum):
     UNKNOWN = "unknown"
     REACHABLE = "reachable"
     UNREACHABLE = "unreachable"
+
+
+class VlanState(StrEnum):
+    """Lifecycle of a discovered VLAN record.
+
+    Removals are soft. A VLAN that disappears from a switch becomes ``MISSING``
+    with its history intact, rather than being deleted — discovery data is an
+    audit trail, and a VLAN can also reappear.
+    """
+
+    ACTIVE = "active"
+    MISSING = "missing"
+
+
+class InterfaceMode(StrEnum):
+    """How an interface carries a VLAN."""
+
+    ACCESS = "access"
+    TRUNK = "trunk"
+    UNKNOWN = "unknown"
+
+
+class VlanAvailability(StrEnum):
+    """Verdict for a VLAN id lookup.
+
+    Availability is always **derived** from current records, never stored — a
+    persisted flag would drift out of step with the switches, which is precisely
+    what this service exists to prevent.
+    """
+
+    AVAILABLE = "available"
+    """No active record on any switch in scope."""
+
+    IN_USE = "in_use"
+    """Active on at least one switch."""
+
+    RESERVED = "reserved"
+    """Outside the usable range (0 and 4095 are reserved by 802.1Q)."""
+
+
+class SyncTrigger(StrEnum):
+    SCHEDULED = "scheduled"
+    MANUAL = "manual"
+    CLI = "cli"
+
+
+class SyncStatus(StrEnum):
+    """Outcome of a synchronisation run.
+
+    ``PARTIAL`` exists so a run where some switches succeeded and others failed
+    is never reported as a flat success or a flat failure — the distinction is
+    what tells an operator whether the VLAN data is trustworthy.
+    """
+
+    RUNNING = "running"
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self is not SyncStatus.RUNNING
+
+
+class SwitchSyncOutcome(StrEnum):
+    SUCCESS = "success"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    """Inactive, unsupported vendor, or unresolvable credential."""

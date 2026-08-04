@@ -143,3 +143,51 @@ delete, not hard); **a switch being unreachable must not mark its VLANs missing*
 important one — it would otherwise look like mass VLAN deletion); the same VLAN id on multiple
 switches; a partial run where some switches fail; and concurrent sync attempts being serialised
 by the advisory lock.
+
+---
+
+## Milestone 2 additions
+
+417 tests: 349 run with no database (unit + API against in-memory fakes), 68 integration tests
+against live PostgreSQL.
+
+### The tests that matter most
+
+| Test | Guards |
+|---|---|
+| `test_sync_service.py::TestTheInvariant` | An unreachable switch never marks VLANs missing, and a failure is attributed to the right switch |
+| `test_reconciler.py::TestPlanIdentity` | Plan entries reference the *matching* record — see below |
+| `test_reconciler.py::TestMassRemovalGuard` | A device reporting zero VLANs cannot wipe a switch |
+| `test_sync_service.py::TestConcurrency` | Two concurrent syncs produce one run, not two |
+| `test_auth_service.py::TestUsageThrottling` | API-key bookkeeping does not serialise the API |
+| `test_juniper_parser.py` | Both Junos schemas, odd entries skipped not fatal, XXE/billion-laughs blocked |
+
+### Why `TestPlanIdentity` exists
+
+A leaked loop variable once made every reconciliation plan entry reference the *last* stored
+record instead of the matching one. Counts were still correct, `ruff` passed, and `mypy --strict`
+passed — the leaked name was a valid `Vlan`. The only visible symptom was VLANs staying `missing`
+after being rediscovered.
+
+The lesson generalises: **assert identity, not just totals.** A test that checks
+`len(plan.to_update) == 3` would not have caught it. The integration counterpart is
+`test_active_count_equals_discovered_count` — after a successful sync, active must equal
+discovered.
+
+### Test isolation with a live database
+
+Rollback alone is **not** sufficient. Application code commits mid-request by design (`mark_used`
+commits immediately so it does not hold an API-key row lock for the request's lifetime), and
+anything committed leaks into the next test. The `db` fixture therefore truncates every table
+after each test, with the table list read from `Base.metadata` so a future migration is covered
+automatically.
+
+Cleanup lives on the `db` fixture rather than `session`, because sync-service tests take `db`
+directly — the service owns its own sessions. Attaching isolation to `session` alone produced
+tests that passed alone and failed in a suite.
+
+### Exercising drift locally
+
+`NAS_MOCK_DRIFT=<int>` changes the mock driver's reported VLAN set, so a re-sync produces genuine
+creations, updates and removals without editing code. Hostname markers `unreachable`, `badauth`
+and `garbled` inject the three driver failure classes.

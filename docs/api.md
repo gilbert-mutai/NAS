@@ -212,3 +212,90 @@ One switch, unwrapped. Requires `switches:read`. Returns `404 SWITCH_NOT_FOUND` 
 - Read `pagination.has_next` rather than inferring the end of a collection from a short page.
 - Treat `credential_status != "resolved"` as an operator-facing warning in the UI. It is a
   configuration problem someone needs to fix, not a transient error.
+
+---
+
+# Milestone 2 endpoints
+
+## `GET /api/v1/vlans`
+
+Search discovered VLANs. Requires `vlans:read`. One row per VLAN **per switch**.
+
+| Query parameter | Notes |
+|---|---|
+| `vlan_id` | 802.1Q tag, 1–4094 |
+| `switch_id` | |
+| `site` | Exact, case-insensitive |
+| `state` | `active` \| `missing` |
+| `q` | Free text over VLAN name, description **and member interface name** |
+| `page`, `page_size` | 1-indexed; page_size 1–500, default 50 |
+
+Ordered by `vlan_id`, then switch name. `%` and `_` in `q` are escaped and match literally.
+
+Note `id` (record id) and `vlan_id` (802.1Q tag) are different fields. `last_seen_at` vs
+`last_synced_at`: the latter being newer means the switch was reachable but no longer reports
+this VLAN.
+
+## `GET /api/v1/vlans/lookup/{vlan_id}`
+
+**The endpoint that replaces an SSH session.** Aggregates one tag across every switch and returns
+an availability verdict in a single call. Requires `vlans:read`.
+
+```bash
+curl -H "X-API-Key: $NAS_API_KEY" https://nas.internal/api/v1/vlans/lookup/1234
+```
+
+```json
+{
+  "vlan_id": 1234,
+  "availability": "in_use",
+  "is_available": false,
+  "switch_count": 2,
+  "active_usages": [ { "switch_name": "adc-core-sw1", "switch_site": "ADC NBO", "vlan": {} } ],
+  "historic_usages": [],
+  "data_as_of": "2026-08-04T08:19:46Z",
+  "is_stale": false
+}
+```
+
+| `availability` | Meaning |
+|---|---|
+| `available` | No active record on any switch in the inventory |
+| `in_use` | Active on at least one switch — see `active_usages` |
+| `reserved` | Tag 0 or 4095; reserved by 802.1Q and never assignable |
+
+**Read `is_stale` before trusting `available`.** The switches remain authoritative; NAS holds a
+synchronised cache. `is_stale` is true when the newest data is older than the staleness threshold,
+and when nothing has ever been synced. `historic_usages` lists records now `missing` — useful
+context before reusing a tag.
+
+Tags outside 0–4095 are rejected with `422`.
+
+## `POST /api/v1/sync`
+
+Trigger a synchronisation. Requires `sync:write`. Returns `202` with the completed run.
+
+Optional body: `{"switch_ids": [1, 2]}` to restrict the run.
+
+Runs are serialised by a PostgreSQL advisory lock: a second concurrent request gets **409
+CONFLICT** rather than queueing, so a double-clicked "Sync Now" cannot start two runs.
+
+Two behaviours the CRM should surface:
+
+- A run where some switches fail completes with status `partial`. Read `switch_results` for
+  per-switch attribution rather than treating the run as wholly good or bad.
+- **A switch that cannot be read never has its VLANs marked missing.** Its data is left exactly
+  as the last successful run left it, and the switch is reported `failed`.
+
+## `GET /api/v1/sync/status`
+
+The endpoint to poll for a dashboard. Requires `sync:read`.
+
+```json
+{"is_running": false, "never_run": false, "latest_run": { "id": 8, "status": "partial" }}
+```
+
+## `GET /api/v1/sync/runs` · `GET /api/v1/sync/runs/{id}`
+
+History, newest first, and one run with per-switch detail. Requires `sync:read`. The list view
+omits `switch_results`; fetch a single run for that.

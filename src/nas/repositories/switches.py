@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Select, func, or_, select
+from datetime import datetime
+
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -94,6 +96,39 @@ class SqlAlchemySwitchRepository:
             ) from exc
         await self._session.refresh(row)
         return to_entity(row)
+
+    async def record_observation(
+        self,
+        switch_id: int,
+        *,
+        is_reachable: bool,
+        checked_at: datetime,
+        health_error: str | None = None,
+        model: str | None = None,
+        os_version: str | None = None,
+    ) -> None:
+        """Record what a sync attempt learned about a device.
+
+        Facts are only overwritten when the device actually reported them: a
+        failed poll must not blank out the model and OS version discovered by the
+        last successful one.
+        """
+        values: dict[str, object] = {
+            "is_reachable": is_reachable,
+            "last_health_check": checked_at,
+            "health_error": health_error,
+        }
+        if model is not None:
+            values["model"] = model
+        if os_version is not None:
+            values["os_version"] = os_version
+
+        await self._session.execute(
+            update(SwitchRow)
+            .where(SwitchRow.id == switch_id)
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
 
     @staticmethod
     def _apply_filters(
