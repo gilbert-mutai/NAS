@@ -94,6 +94,14 @@ class Settings(BaseSettings):
     driver_connect_timeout: Annotated[int, Field(ge=1, le=300)] = 30
     driver_command_timeout: Annotated[int, Field(ge=1, le=600)] = 60
 
+    driver_verify_tls: bool = False
+    """Verify device TLS certificates (Cisco NX-API).
+
+    Defaults False: Nexus switches ship self-signed certificates and NAS reaches
+    them over a private management network, so verification would fail on
+    essentially every device. Enable once the estate presents certificates NAS can
+    validate. See nas.drivers.options.DriverOptions."""
+
     # ── Device credentials ────────────────────────────────────────────────────
     # Path to the 0600-mode YAML file holding switch credentials. Never stored in
     # the database. See credentials.example.yaml.

@@ -17,7 +17,7 @@ from nas.drivers.base import (
 )
 from nas.drivers.mock import MockDriver
 from nas.drivers.registry import create_driver, open_driver, supported_vendors
-from tests.fakes import make_switch
+from tests.fakes import FakeCredentialProvider, make_switch
 
 
 class TestDiscoveredVlanValidation:
@@ -158,15 +158,41 @@ class TestMockDriver:
 
 
 class TestRegistry:
-    def test_juniper_and_mock_are_supported(self) -> None:
-        assert supported_vendors() == frozenset({Vendor.JUNIPER, Vendor.MOCK})
+    def test_implemented_platforms(self) -> None:
+        assert supported_vendors() == frozenset(
+            {Vendor.CISCO_IOSXE, Vendor.CISCO_NXOS, Vendor.JUNIPER, Vendor.MOCK}
+        )
 
-    def test_unimplemented_vendor_is_rejected_with_guidance(self) -> None:
+    def test_unimplemented_platform_lists_what_is_supported(self) -> None:
+        with pytest.raises(DriverNotSupportedError) as exc_info:
+            create_driver(make_switch(vendor=Vendor.MIKROTIK), None)  # type: ignore[arg-type]
+        message = str(exc_info.value)
+        assert "mikrotik" in message
+        assert "cisco_iosxe" in message  # tells the operator what *is* supported
+
+    def test_legacy_cisco_value_names_its_two_replacements(self) -> None:
+        """'cisco' is ambiguous — Catalyst and Nexus need different drivers. The
+        error has to say which value to use, or an operator is stuck."""
         with pytest.raises(DriverNotSupportedError) as exc_info:
             create_driver(make_switch(vendor=Vendor.CISCO), None)  # type: ignore[arg-type]
         message = str(exc_info.value)
-        assert "cisco" in message
-        assert "juniper" in message  # tells the operator what *is* supported
+        assert "cisco_iosxe" in message
+        assert "cisco_nxos" in message
+        assert "443" in message  # the port gotcha, stated up front
+
+    def test_cisco_platforms_build_their_own_drivers(self) -> None:
+        from nas.drivers.cisco_iosxe import CiscoIosXeDriver
+        from nas.drivers.cisco_nxos import CiscoNxosDriver
+
+        credential = FakeCredentialProvider({"c"}).get("c")
+        assert isinstance(
+            create_driver(make_switch(vendor=Vendor.CISCO_IOSXE), credential),
+            CiscoIosXeDriver,
+        )
+        assert isinstance(
+            create_driver(make_switch(vendor=Vendor.CISCO_NXOS), credential),
+            CiscoNxosDriver,
+        )
 
     def test_mock_vendor_builds_a_mock_driver(self) -> None:
         driver = create_driver(make_switch(vendor=Vendor.MOCK), None)  # type: ignore[arg-type]

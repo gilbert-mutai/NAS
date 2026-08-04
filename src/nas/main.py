@@ -125,6 +125,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             connect_timeout=settings.driver_connect_timeout,
             command_timeout=settings.driver_command_timeout,
             stale_run_minutes=settings.sync_stale_run_minutes,
+            verify_device_tls=settings.driver_verify_tls,
         ),
     )
 

@@ -191,3 +191,43 @@ tests that passed alone and failed in a suite.
 `NAS_MOCK_DRIFT=<int>` changes the mock driver's reported VLAN set, so a re-sync produces genuine
 creations, updates and removals without editing code. Hostname markers `unreachable`, `badauth`
 and `garbled` inject the three driver failure classes.
+
+---
+
+## Cisco driver testing
+
+504 tests. 85 cover the Cisco work, and **none of them need a switch, netmiko, or
+PyEZ installed.**
+
+| File | Covers |
+|---|---|
+| `test_cisco_iosxe_parser.py` | `show vlan brief`: wrapped port lists, variable column widths, IOS default VLANs, suspended VLANs, rejected commands |
+| `test_cisco_nxos_parser.py` | NX-OS JSON: ins_api envelope, single-row-as-object, scalar-or-list ports, `vn-segment`, error codes |
+| `test_cisco_drivers.py` | NX-API request construction and status mapping via `httpx.MockTransport`; IOS-XE connect kwargs and the missing-dependency path |
+
+### Two properties worth restating
+
+**A rejected command must raise, not return an empty list.** Tested explicitly for
+both platforms. Returning `()` from a failed read would reach the reconciler as
+"every VLAN on this switch was deleted" — the mass-deletion failure mode the whole
+design guards against. The reconciler's own empty-discovery guard is the second
+line of defence, not the first.
+
+**Every driver failure must be catchable as `DriverError`.** One `except` clause in
+the sync service is what keeps an unreadable switch from being reconciled, so the
+NX-OS tests assert it across auth failures, 404s, 500s and non-JSON bodies.
+
+### Testing NX-API with no device
+
+`httpx.MockTransport` with a handler that dispatches on the NX-API `input` command,
+injected directly onto the driver's client. That exercises real request
+construction, real status-code handling and real parsing — everything except the
+socket.
+
+### A bug realistic fixtures caught
+
+`parse_version` originally filtered lines case-sensitively for `IOS`/`Software`.
+Real `show version` output **wraps**, putting `Version 16.12.05b` on a continuation
+line whose only marker is uppercase `RELEASE SOFTWARE`. A single-line fixture passed;
+the wrapped one did not. The fix scans the whole output, anchored on a digit, and is
+now verified against 3650, 2960 and 9300 banner shapes.

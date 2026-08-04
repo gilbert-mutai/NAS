@@ -214,3 +214,58 @@ switch commits independently.
 PyEZ is synchronous. Every call goes through `anyio.to_thread.run_sync`; blocking the event loop
 would stall every in-flight HTTP request while a switch is polled. Switches are polled
 concurrently, bounded by `NAS_SYNC_MAX_CONCURRENCY`.
+
+---
+
+## Drivers as of the Cisco work
+
+```
+drivers/
+├── base.py                    Protocol + normalised DTOs. Imports no vendor library
+├── options.py                 DriverOptions — timeouts and transport config
+├── registry.py                Vendor -> driver. The only file a new platform touches
+│
+├── cisco_iosxe.py             SSH CLI via netmiko (thread-offloaded)
+├── cisco_iosxe_parser.py      pure: show vlan brief / ip int brief -> DTOs
+├── cisco_nxos.py              NX-API JSON over HTTPS via httpx (natively async)
+├── cisco_nxos_parser.py       pure: NX-OS JSON -> DTOs
+├── juniper.py                 NETCONF via PyEZ (thread-offloaded)
+├── juniper_parser.py          pure: Junos XML -> DTOs
+└── mock.py                    deterministic in-memory device
+```
+
+| Platform | Transport | Structured? | Optional extra | Blocking? |
+|---|---|---|---|---|
+| Nexus 9000 (`cisco_nxos`) | NX-API, JSON/HTTPS :443 | Yes, natively | none (`httpx` is core) | No — async |
+| Catalyst (`cisco_iosxe`) | SSH CLI :22 | No, parsed | `[cisco]` → netmiko | Yes — threaded |
+| Juniper (`juniper`) | NETCONF :22 | Yes, XML | `[juniper]` → PyEZ | Yes — threaded |
+| Mock (`mock`) | none | Yes | none | No |
+
+### The pattern every driver follows
+
+**One I/O module plus one pure parser.** The parser takes bytes or a payload and
+returns DTOs, importing no vendor library. That is what makes the riskiest part of
+each integration — reading real device output across firmware versions — testable
+against recorded fixtures, on a laptop, in CI, with the optional dependency absent.
+
+It is also why the whole test suite runs with neither netmiko nor PyEZ installed.
+
+### Where transport differences are absorbed
+
+The `NetworkDeviceDriver` Protocol is deliberately transport-agnostic: `connect`,
+`close`, `get_facts`, `get_vlans`. Nothing in it implies SSH. That is why NX-API over
+HTTPS slotted in beside two SSH drivers without touching the interface — and why the
+`port` column needed no new semantics, only different values (443 for Nexus).
+
+### Enrichment is best-effort; discovery is not
+
+Each Cisco driver makes one **mandatory** call (`show vlan …`) and one or two
+**optional** ones:
+
+* IOS-XE: `show ip interface brief` → SVI, for `l3_interface`
+* NX-OS: `show interface brief` → SVI; `show running-config vlan` → `vn-segment`
+
+If an optional call fails — a restricted role, a feature not enabled — the switch
+still syncs, just with less detail. If the mandatory call fails, the driver raises
+and the reconciler is never reached. This split is what keeps a
+`network-operator`-only account from being treated as an unreadable switch.

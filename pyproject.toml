@@ -22,14 +22,24 @@ dependencies = [
     "PyYAML>=6.0,<7.0",
     "typer>=0.15,<1.0",
     "defusedxml>=0.7,<1.0",
+    "httpx>=0.28,<1.0",
     "apscheduler>=3.10,<4.0",
 ]
 
 [project.optional-dependencies]
-# Only the Juniper driver needs PyEZ. The core, the reconciliation engine and the
-# whole test suite run without it.
+# Device libraries are optional extras, one per transport. The core, the
+# reconciliation engine and the whole test suite run without any of them — the
+# parsers are pure functions tested against recorded output.
+#
+# Nexus (NX-OS) needs no extra: NX-API is JSON over HTTPS via httpx, a runtime dep.
+cisco = [
+    "netmiko>=4.3,<5.0",
+]
 juniper = [
     "junos-eznc>=2.7,<3.0",
+]
+devices = [
+    "nas[cisco,juniper]",
 ]
 dev = [
     # pytest >= 9.0.3: earlier lines carry PYSEC-2026-1845. pytest-asyncio >= 1.4
@@ -37,7 +47,6 @@ dev = [
     "pytest>=9.0.3,<10.0",
     "pytest-asyncio>=1.4,<2.0",
     "pytest-cov>=7.0,<8.0",
-    "httpx>=0.28,<1.0",
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<2.0",
     "types-PyYAML>=6.0,<7.0",
@@ -98,6 +107,7 @@ ignore_errors = true
 module = [
     "jnpr.*",
     "lxml.*",
+    "netmiko.*",
     "apscheduler.*",
 ]
 ignore_missing_imports = true

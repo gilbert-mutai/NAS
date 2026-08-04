@@ -52,6 +52,28 @@ transactions, APScheduler + `nas sync run` CLI, and the VLAN/sync endpoints incl
 
 The mock driver is what makes reconciliation testable in CI, where no switch is reachable.
 
+## Cisco drivers — COMPLETE (2026-08-04)
+
+Inserted ahead of production hardening after the infrastructure team reported the
+primary fleet is Cisco (Catalyst 3650, other Catalyst, Nexus 9000) with Juniper
+secondary. Hardening a service that could not read the actual estate would have
+been the wrong order.
+
+Delivered: `cisco_iosxe` (netmiko SSH + pure CLI parser) and `cisco_nxos` (NX-API
+JSON over HTTPS), `DriverOptions`, an optional enable secret, and 85 tests. No
+schema migration was required.
+
+**Open questions for the infra team** — none block further work, all improve it:
+
+1. Sample `show vlan brief` / `show vlan | json` from real devices, to replace
+   hand-built fixtures with recorded ones.
+2. Is `feature nxapi` enabled on the N9Ks? If not, an NX-OS-over-SSH fallback is
+   needed.
+3. Read-only service accounts, or TACACS with enable? The `enable_password` field
+   exists but is untested against a real device.
+4. Is VXLAN in use on the Nexus fleet? Determines whether `vn-segment` enrichment
+   matters.
+
 ## Milestone 3 — Django integration
 
 A new `netops` app in the CRM. **No models, no migrations** — an HTTP client plus templates, which

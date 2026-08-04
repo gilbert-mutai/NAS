@@ -281,3 +281,113 @@ touches the same row, **all requests using that key serialised behind the slowes
 `POST /sync` stalled every other CRM call. It now commits immediately (microseconds of lock) and is
 only rewritten when the stored timestamp is older than five minutes, so reads do not each cost an
 UPDATE. The structured access log remains the precise record of key usage.
+
+---
+
+## Cisco drivers (2026-08-04)
+
+### Context: the primary fleet is Cisco, not Juniper
+
+The infrastructure team reported that the primary switches are Catalyst 3650s,
+other Catalyst models, and Nexus 9000s; Juniper is secondary. Milestones 1–3 were
+built with Juniper as the first driver.
+
+**What this changed:** two drivers, two enum members, a `DriverOptions` dataclass,
+and a `netmiko` extra.
+
+**What it did not change:** the schema (no migration — `switches.vendor` carries no
+CHECK constraint by design), the reconciliation engine, the sync service, the API,
+and the `netops` UI. The abstraction held. The VLAN model also fitted Cisco without
+alteration: IOS's `interface Vlan110` maps to `l3_interface`, and NX-OS's
+`vn-segment` maps to `vxlan_vni`.
+
+### Revisiting the Python decision
+
+The original justification for Python over the brief's Node/TypeScript was PyEZ's
+structured NETCONF output for Juniper. That argument now applies to a *secondary*
+vendor and is much weaker than when it was made.
+
+The conclusion still holds, for different reasons:
+
+* **TextFSM / `ntc-templates`**, the ecosystem for parsing Cisco CLI output, is
+  Python-only. For older Catalyst gear there is no structured alternative, and no
+  Node equivalent of that ecosystem.
+* **`netmiko`** (multi-vendor network SSH) and **`ncclient`** (NETCONF) are
+  Python-first.
+* NX-API is plain JSON over HTTPS, so it is language-neutral.
+
+Recorded here rather than left as a stale rationale in the Milestone 1 notes.
+
+### Cisco is two platforms, not one vendor
+
+`Vendor` gained `cisco_iosxe` and `cisco_nxos` rather than a single `cisco`,
+because the registry keys on vendor and the two platforms differ in command
+syntax, structured-output mechanism, *and transport*. One driver would have been a
+branch-on-platform conditional in every method.
+
+The legacy `cisco` value is retained so existing rows still load, but is
+deliberately **not** implemented: sync skips it with a message naming the two
+replacements and the port gotcha. That guidance is exposed via
+`registry.unsupported_reason()` — the sync service decides to skip without ever
+constructing a driver, so without that function the hint would have been
+unreachable in the normal path.
+
+### IOS-XE: SSH CLI, not NETCONF
+
+NETCONF/YANG on IOS-XE requires 16.x and is off by default; Catalyst 3650s in the
+field run anything from 3.x upward. Parsing `show vlan brief` works on every one of
+them, so **the firmware version stopped being a prerequisite** — which also removed
+a blocking question from the infra team. NETCONF is a worthwhile optimisation later
+for the subset that supports it.
+
+A hand-written parser was chosen over `ntc-templates`: for two stable, well-known
+commands, the template library plus its resolution layer is a large dependency for
+~150 lines. Column geometry is derived from the separator row rather than
+hardcoded, which is what makes it robust across platforms with different field
+widths. If a third or fourth Cisco command is ever needed, revisit this.
+
+### NX-OS: NX-API over HTTPS
+
+`show vlan | json` returns real structured data — no scraping, no per-release drift
+to chase. It also needs no thread offload, since `httpx` is natively async; the
+PyEZ and netmiko drivers both block and are dispatched to worker threads.
+
+Two NX-OS JSON conventions are normalised in the parser, and both are the kind of
+thing that works in a lab and fails in production:
+
+* `ROW_vlanbriefxbrief` is a **list** for several VLANs and a bare **object** for
+  one.
+* `vlanshowplist-ifidx` is a **string** for a short port list and a **list** for a
+  long one.
+
+**A Nexus registered on port 22 is refused** with the exact re-registration command,
+rather than silently substituting 443. Guessing a different port than the operator
+specified is worse than failing.
+
+### Interface mode is UNKNOWN on Cisco, deliberately
+
+Neither `show vlan brief` nor `show vlan | json` reliably distinguishes access from
+trunk membership. Determining it needs `show interfaces switchport`, a third, much
+more verbose command.
+
+Reporting `unknown` is better than guessing, and — because the reconciler compares
+`(name, mode)` pairs — a *consistent* `unknown` produces no spurious changes.
+
+**Follow-up, and it has a cost:** if trunk detection is added later, every
+interface signature changes, so the next sync will report every Cisco VLAN as
+`updated` exactly once. Harmless, but worth expecting rather than debugging.
+
+### VLAN status is recorded in `raw`, not promoted to a column
+
+IOS reports `active`, `suspended`, `act/lshut`; NX-OS reports `vlanshowbr-vlanstate`
+and `shutstate`. None of it affects availability — **a suspended VLAN still occupies
+its ID** — so adding a column would have meant a migration for information nothing
+consumes. It is kept in the `raw` JSONB for audit.
+
+### Device TLS verification defaults to off
+
+`NAS_DRIVER_VERIFY_TLS=false` by default. Nexus switches ship self-signed
+certificates and NAS reaches them over a private management network, so
+verification would fail on essentially every device while the network boundary does
+the real work. It is a genuine weakening of transport security, so it is a
+documented setting rather than a hardcoded `verify=False`.

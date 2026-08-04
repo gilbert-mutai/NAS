@@ -32,7 +32,8 @@ from nas.domain.entities import Switch, SyncRun
 from nas.domain.enums import SwitchSyncOutcome, SyncTrigger
 from nas.domain.pagination import PageRequest
 from nas.drivers.base import DriverError
-from nas.drivers.registry import open_driver, supported_vendors
+from nas.drivers.options import DriverOptions
+from nas.drivers.registry import open_driver, unsupported_reason
 from nas.repositories.protocols import (
     SwitchFilters,
     SwitchSyncResult,
@@ -63,6 +64,15 @@ class SyncOptions:
     connect_timeout: int = 30
     command_timeout: int = 60
     stale_run_minutes: int = 60
+    verify_device_tls: bool = False
+
+    @property
+    def driver_options(self) -> DriverOptions:
+        return DriverOptions(
+            connect_timeout=self.connect_timeout,
+            command_timeout=self.command_timeout,
+            verify_tls=self.verify_device_tls,
+        )
 
 
 class SyncService:
@@ -202,12 +212,7 @@ class SyncService:
             )
 
         try:
-            async with open_driver(
-                switch,
-                credential,
-                connect_timeout=self._options.connect_timeout,
-                command_timeout=self._options.command_timeout,
-            ) as driver:
+            async with open_driver(switch, credential, self._options.driver_options) as driver:
                 facts = await driver.get_facts()
                 discovered = await driver.get_vlans()
         except DriverError as exc:
@@ -273,11 +278,9 @@ class SyncService:
     def _skip_reason(self, switch: Switch) -> str | None:
         if not switch.is_active:
             return "Switch is marked inactive."
-        if switch.vendor not in supported_vendors():
-            return (
-                f"No driver implemented for vendor {switch.vendor.value!r}. "
-                "The switch is registered but cannot be synchronised yet."
-            )
+        unsupported = unsupported_reason(switch.vendor)
+        if unsupported is not None:
+            return unsupported
         if not self._credentials.has(switch.credential_ref):
             return (
                 f"Credential {switch.credential_ref!r} does not resolve. "

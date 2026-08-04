@@ -37,6 +37,7 @@ from nas.drivers.base import (
     DriverParseError,
 )
 from nas.drivers.juniper_parser import parse_vlan_information
+from nas.drivers.options import DriverOptions
 
 logger = get_logger(__name__)
 
@@ -60,14 +61,11 @@ class JuniperDriver:
         self,
         switch: Switch,
         credential: DeviceCredential,
-        *,
-        connect_timeout: int = 30,
-        command_timeout: int = 60,
+        options: DriverOptions | None = None,
     ) -> None:
         self._switch = switch
         self._credential = credential
-        self._connect_timeout = connect_timeout
-        self._command_timeout = command_timeout
+        self._options = options or DriverOptions()
         self._device: Any | None = None
 
     @property
@@ -85,7 +83,7 @@ class JuniperDriver:
             # normalize=True strips whitespace from element text, which Junos
             # pads inconsistently between releases.
             "normalize": True,
-            "conn_open_timeout": self._connect_timeout,
+            "conn_open_timeout": self._options.connect_timeout,
             # Never fall back to an agent or ~/.ssh keys: the only credentials
             # this process may use are the ones explicitly provisioned for it.
             "ssh_config": False,
@@ -119,7 +117,7 @@ class JuniperDriver:
         except Exception as exc:
             raise DriverConnectionError(f"Connection to {self.label} failed: {exc}") from exc
 
-        device.timeout = self._command_timeout
+        device.timeout = self._options.command_timeout
         return device
 
     async def connect(self) -> None:
