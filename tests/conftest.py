@@ -22,9 +22,13 @@ from nas.main import create_app
 from tests.fakes import (
     FakeCredentialProvider,
     FakeDatabase,
+    FakeSyncService,
     InMemoryApiKeyRepository,
     InMemorySwitchRepository,
+    InMemorySyncRunRepository,
+    InMemoryVlanRepository,
     make_switch,
+    make_vlan,
 )
 
 # Never reachable; API tests must not open a connection. Integration tests use
@@ -60,6 +64,21 @@ def switch_repository() -> InMemorySwitchRepository:
 
 
 @pytest.fixture
+def vlan_repository() -> InMemoryVlanRepository:
+    return InMemoryVlanRepository([make_vlan()])
+
+
+@pytest.fixture
+def sync_run_repository() -> InMemorySyncRunRepository:
+    return InMemorySyncRunRepository()
+
+
+@pytest.fixture
+def sync_service() -> FakeSyncService:
+    return FakeSyncService()
+
+
+@pytest.fixture
 def credential_provider() -> FakeCredentialProvider:
     return FakeCredentialProvider({"juniper-core"})
 
@@ -92,6 +111,9 @@ def api_key_repository(api_key: ApiKey) -> InMemoryApiKeyRepository:
 def app_factory(
     switch_repository: InMemorySwitchRepository,
     api_key_repository: InMemoryApiKeyRepository,
+    vlan_repository: InMemoryVlanRepository,
+    sync_run_repository: InMemorySyncRunRepository,
+    sync_service: FakeSyncService,
     credential_provider: FakeCredentialProvider,
 ) -> Iterator[object]:
     """Returns a callable building an app with the given settings.
@@ -109,10 +131,16 @@ def app_factory(
         application.state.database = FakeDatabase()
         application.state.credential_provider = credential_provider
 
+        # SyncService normally comes from app.state — it owns a session factory and
+        # is shared with the scheduler — so it is replaced on state, not overridden.
+        application.state.sync_service = sync_service
+
         application.dependency_overrides[deps.get_app_settings] = lambda: settings
         application.dependency_overrides[deps.get_switch_repository] = lambda: switch_repository
         application.dependency_overrides[deps.get_api_key_repository] = lambda: api_key_repository
         application.dependency_overrides[deps.get_credential_provider] = lambda: credential_provider
+        application.dependency_overrides[deps.get_vlan_repository] = lambda: vlan_repository
+        application.dependency_overrides[deps.get_sync_run_repository] = lambda: sync_run_repository
         created.append(application)
         return application
 

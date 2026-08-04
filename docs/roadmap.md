@@ -27,6 +27,16 @@ including failure exit codes; live server probes and API calls; revocation takin
 under-scoped key rejected; staging boot refused without an allowlist; no secrets in logs;
 non-root container with no baked-in secrets; containerised stack serving requests.
 
+## Milestone 2 — COMPLETE (2026-08-04)
+
+Delivered: driver abstraction (Juniper PyEZ + mock + registry), pure XML parser, `vlans` /
+`vlan_interfaces` / `sync_runs` / `sync_run_switches` (migration 0002), reconciliation engine with
+soft-delete and a mass-removal guard, sync service with advisory-lock serialisation and per-switch
+transactions, APScheduler + `nas sync run` CLI, and the VLAN/sync endpoints including
+`/vlans/lookup/{vlan_id}`.
+
+### Original plan
+
 ## Milestone 2 — VLAN discovery engine (next)
 
 - `drivers/` package: `NetworkDeviceDriver` Protocol, Juniper (PyEZ), and a mock driver

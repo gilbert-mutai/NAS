@@ -72,6 +72,28 @@ class Settings(BaseSettings):
     docs_enabled: bool = True
     cors_allow_origins: CsvList = Field(default_factory=list)
 
+    # ── Synchronisation ───────────────────────────────────────────────────────
+    sync_enabled: bool = True
+    """Whether the embedded scheduler runs periodic syncs."""
+
+    sync_interval_seconds: Annotated[int, Field(ge=60, le=86_400)] = 900
+
+    sync_max_concurrency: Annotated[int, Field(ge=1, le=32)] = 4
+    """Switches polled in parallel. Device I/O dominates a run's wall-clock."""
+
+    sync_allow_empty_discovery: bool = False
+    """Permit a switch reporting zero VLANs to mark all its records missing.
+
+    Off by default: an empty result is far more often a silent read failure than
+    a genuine mass deletion. See nas.sync.reconciler.
+    """
+
+    sync_stale_run_minutes: Annotated[int, Field(ge=5, le=1440)] = 60
+    """After this long, a still-'running' run is assumed abandoned and failed."""
+
+    driver_connect_timeout: Annotated[int, Field(ge=1, le=300)] = 30
+    driver_command_timeout: Annotated[int, Field(ge=1, le=600)] = 60
+
     # ── Device credentials ────────────────────────────────────────────────────
     # Path to the 0600-mode YAML file holding switch credentials. Never stored in
     # the database. See credentials.example.yaml.

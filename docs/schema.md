@@ -140,3 +140,75 @@ PY
 **Availability will be derived, never stored.** A VLAN is "available" when no row exists for it
 in the queried scope. An `is_available` column would drift out of sync with the switches, which
 defeats the point of the service.
+
+---
+
+## Milestone 2 — VLAN discovery
+
+Migration `0002_vlan_discovery`.
+
+### `vlans`
+
+One row per VLAN **per switch**.
+
+| Column | Notes |
+|---|---|
+| `id` | Surrogate key. Referenced by `vlan_interfaces.vlan_record_id` |
+| `switch_id` | FK → `switches.id`, `ON DELETE CASCADE` |
+| `vlan_id` | The **802.1Q tag**. `CHECK (vlan_id BETWEEN 1 AND 4094)` |
+| `name`, `description`, `l3_interface`, `vxlan_vni` | As reported by the device |
+| `state` | `active` \| `missing` |
+| `first_seen_at` | Never overwritten — survives a disappear/reappear cycle |
+| `last_seen_at` | Advances **only** when the VLAN is actually observed |
+| `last_synced_at` | Advances whenever the switch was polled successfully |
+| `raw` | JSONB of the driver payload, for audit and parser debugging |
+
+`UNIQUE (switch_id, vlan_id)` · indexes on `(vlan_id, state)`, `(switch_id, state)`, `state`, `name`
+
+Three decisions worth not reversing:
+
+- **Uniqueness is `(switch_id, vlan_id)`, not `vlan_id`.** The same tag legitimately exists on
+  many switches; answering "who is using 1234" means aggregating rows.
+- **There is no `is_available` column.** Availability is derived at query time from the absence
+  of an active row. A stored flag would drift from the switches — exactly the failure this
+  service exists to prevent.
+- **`last_seen_at` and `last_synced_at` are different things.** A VLAN marked missing has a
+  `last_synced_at` newer than its `last_seen_at`: the switch answered, but no longer reports the
+  VLAN. Conflating them makes staleness reporting meaningless.
+
+### `vlan_interfaces`
+
+Port membership — the "where is it used" detail.
+
+| Column | Notes |
+|---|---|
+| `vlan_record_id` | FK → `vlans.id`, `ON DELETE CASCADE`. Named to avoid confusion with the 802.1Q tag |
+| `name` | Interface name as reported, e.g. `ge-0/0/12.0` |
+| `mode` | `access` \| `trunk` \| `unknown` |
+
+`UNIQUE (vlan_record_id, name)`. Membership is replaced wholesale on change rather than diffed —
+it is small and the driver always reports it in full.
+
+### `sync_runs`
+
+One row per synchronisation pass: `trigger` (`scheduled`/`manual`/`cli`), `status`
+(`running`/`success`/`partial`/`failed`), timings, `correlation_id`, and aggregate counters
+(`switches_*`, `vlans_*`).
+
+`partial` is a first-class status. A run where some switches succeeded and others failed is
+neither a success nor a failure, and the distinction is what tells an operator whether the data
+is trustworthy.
+
+### `sync_run_switches`
+
+Per-switch outcome within a run, so a partial run is explainable rather than merely labelled.
+
+`switch_id` is `ON DELETE SET NULL` while `switch_name` is a snapshot — run history stays
+auditable after a switch is removed from inventory.
+
+### Enum-backed columns
+
+`state`, `mode`, `trigger`, `status` and `outcome` are plain `VARCHAR` with **no** CHECK
+constraint, matching the `switches.vendor` precedent: the application owns the allowed values, so
+adding one needs no migration. `vlan_id`'s range check is different — that is real data integrity,
+not an enum.

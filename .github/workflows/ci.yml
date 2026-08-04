@@ -1,10 +1,12 @@
 name: CI
 
+# Mirrors the CRM's convention: checks run on the default branch, on the active
+# development branch, and on every pull request targeting the default branch.
 on:
   push:
-    branches: [main]
+    branches: [master, nas-gilbert]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 # A newer push to the same branch supersedes an in-flight run.
 concurrency:

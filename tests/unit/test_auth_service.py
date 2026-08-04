@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,7 +15,7 @@ from nas.core.errors import (
 )
 from nas.core.security import Scope, generate_api_key
 from nas.domain.entities import ApiKey
-from nas.services.auth import AuthenticationService
+from nas.services.auth import LAST_USED_THROTTLE, AuthenticationService
 from tests.fakes import InMemoryApiKeyRepository
 
 NOW = datetime.now(UTC)
@@ -134,3 +135,48 @@ class TestAuthorize:
         with pytest.raises(InsufficientScopeError) as exc_info:
             AuthenticationService.authorize(key, required)
         assert exc_info.value.details["missing_scopes"] == [Scope.VLANS_READ.value]
+
+
+class TestUsageThrottling:
+    """Regression guard for an API-wide serialisation bug.
+
+    ``mark_used`` UPDATEs the api_keys row, taking a row lock. When that lock was
+    held for the request's whole lifetime, every caller sharing a key serialised
+    behind the slowest request — a long POST /sync stalled all other CRM calls.
+    The repository now commits immediately, and the service throttles the write so
+    reads do not each cost an UPDATE.
+    """
+
+    async def test_first_use_is_recorded(self) -> None:
+        plaintext, key = build_key()
+        repository = InMemoryApiKeyRepository([key])
+        await AuthenticationService(repository).authenticate(plaintext)
+        assert len(repository.marked_used) == 1
+
+    async def test_recent_use_is_not_rewritten(self) -> None:
+        plaintext, key = build_key()
+        recent = replace(key, last_used_at=datetime.now(UTC))
+        repository = InMemoryApiKeyRepository([recent])
+        await AuthenticationService(repository).authenticate(plaintext)
+        assert repository.marked_used == []
+
+    async def test_stale_use_is_rewritten(self) -> None:
+        plaintext, key = build_key()
+        stale = replace(key, last_used_at=datetime.now(UTC) - LAST_USED_THROTTLE * 2)
+        repository = InMemoryApiKeyRepository([stale])
+        await AuthenticationService(repository).authenticate(plaintext)
+        assert len(repository.marked_used) == 1
+
+    async def test_repeated_authentication_writes_once(self) -> None:
+        """Ten reads with the same key must not cost ten UPDATEs."""
+        plaintext, key = build_key()
+        repository = InMemoryApiKeyRepository([key])
+        service = AuthenticationService(repository)
+
+        await service.authenticate(plaintext)
+        # Reflect the write back, as the database would on the next read.
+        repository.seed(replace(key, last_used_at=datetime.now(UTC)))
+        for _ in range(9):
+            await service.authenticate(plaintext)
+
+        assert len(repository.marked_used) == 1
