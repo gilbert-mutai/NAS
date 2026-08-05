@@ -8,9 +8,10 @@ Its purpose is to remove the need for engineers to SSH into production switches 
 provisioning. Consumers — currently the Angani CRM — read from this API and never touch a
 switch directly, never hold switch credentials, and never execute network commands.
 
-**Status: Milestone 1 complete.** Device inventory, API authentication and the operational
-spine (config, logging, error handling, health probes, migrations) are done and verified.
-VLAN discovery is Milestone 2.
+**Status: Phase 1 discovery is working.** Device inventory, API authentication, the operational
+spine, VLAN discovery with reconciliation, and drivers for Cisco Catalyst (IOS-XE), Cisco Nexus
+(NX-OS) and Juniper. The CRM consumes it through its `netops` app. Production hardening —
+audit log, rate limiting, staging deployment — is the remaining milestone.
 
 ---
 
@@ -18,7 +19,7 @@ VLAN discovery is Milestone 2.
 
 | Document | Covers |
 |---|---|
-| **[docs/handoff.md](docs/handoff.md)** | **Start here when resuming** — current state, how to restart the environment, the Milestone 2 plan |
+| **[docs/handoff.md](docs/handoff.md)** | **Start here when resuming** — current state, how to restart the environment, what is next |
 | [docs/architecture.md](docs/architecture.md) | Layering, dependency rules, request flow, extension points |
 | [docs/schema.md](docs/schema.md) | Tables, columns, constraints, migration policy |
 | [docs/api.md](docs/api.md) | Endpoints, auth, scopes, response and error contracts |
@@ -67,10 +68,18 @@ nas db upgrade
 # 6. An API key for the CRM. Printed once — copy it now.
 nas apikey create --name crm --scopes switches:read,vlans:read,sync:read,sync:write
 
-# 7. Register a switch. --credential-ref is a NAME from credentials.yaml, not a password.
-nas switch add --name adc-core-sw1 --hostname 10.20.0.11 \
-               --vendor juniper --credential-ref juniper-core \
+# 7. Register switches. --credential-ref is a NAME from credentials.yaml, never a
+#    password. Note the platform values and the Nexus port.
+nas switch add --name adc-cat-sw1 --hostname 10.20.0.11 \
+               --vendor cisco_iosxe --credential-ref cisco-catalyst \
                --site "ADC NBO" --environment production
+
+nas switch add --name adc-n9k-1 --hostname 10.20.0.21 --port 443 \
+               --vendor cisco_nxos --credential-ref cisco-nexus \
+               --site "ADC NBO" --environment production
+
+nas switch add --name adc-jun-sw1 --hostname 10.20.0.31 \
+               --vendor juniper --credential-ref juniper-core --site "ADC NBO"
 
 # 7b. No switch to hand? Register a mock one — it opens no socket and returns
 #     deterministic VLANs, so the whole pipeline works on a laptop.
@@ -117,7 +126,7 @@ nas apikey list                                                  # never prints 
 nas apikey revoke crm                                            # effective on next request
 nas apikey scopes
 
-nas switch add --name sw1 --hostname 10.0.0.1 --vendor juniper --credential-ref juniper-core
+nas switch add --name sw1 --hostname 10.0.0.1 --vendor cisco_iosxe --credential-ref cisco-catalyst
 nas switch list
 
 nas credentials check     # verifies every switch's credential ref resolves; prints names only
@@ -136,6 +145,33 @@ nas serve --host 127.0.0.1 --port 8000 --reload
 `nas sync run` shares the SyncService and the advisory lock with the running API, so it is safe to
 drive from a systemd timer alongside the service. Set `NAS_SYNC_ENABLED=false` to disable the
 embedded scheduler and use timers instead — matching how the CRM schedules its own jobs.
+
+---
+
+## Supported platforms
+
+| `--vendor` | Devices | Transport | Install |
+|---|---|---|---|
+| `cisco_iosxe` | Catalyst 3650, 9300, 2960, … | SSH CLI, port 22 | `pip install '.[cisco]'` |
+| `cisco_nxos` | Nexus 9000 | **NX-API, JSON over HTTPS, port 443** | core only |
+| `juniper` | EX, QFX | NETCONF, port 22 | `pip install '.[juniper]'` |
+| `mock` | none — local development and CI | none | core only |
+
+Install both device libraries at once with `pip install '.[devices]'`.
+
+Three things that catch people out:
+
+- **Nexus needs `--port 443`**, not 22. Registering one on 22 fails with the exact
+  re-registration command rather than silently connecting elsewhere.
+- **`--vendor cisco` is not a thing.** Catalyst and Nexus need different drivers, so
+  the value must be `cisco_iosxe` or `cisco_nxos`. The legacy `cisco` value still
+  loads but is skipped during sync with a message saying which to use.
+- **Nexus requires `feature nxapi`** on the device, and an account with at least the
+  `network-operator` role.
+
+Interface mode is reported as `unknown` on Cisco: neither `show vlan brief` nor
+`show vlan | json` reliably distinguishes access from trunk, and a consistent
+`unknown` is better than a guess. See [docs/decisions.md](docs/decisions.md).
 
 ---
 

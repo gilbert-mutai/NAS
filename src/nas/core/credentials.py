@@ -54,6 +54,12 @@ class DeviceCredential:
     password: str | None = field(default=None, repr=False)
     private_key_path: Path | None = field(default=None, repr=False)
     private_key_passphrase: str | None = field(default=None, repr=False)
+    enable_password: str | None = field(default=None, repr=False)
+    """Cisco enable secret. Optional.
+
+    VLAN discovery normally works at privilege 1, so most estates need nothing
+    here. Supply it only where ``show`` commands are restricted; the IOS-XE driver
+    attempts ``enable`` when it is set and continues without it if that fails."""
 
     def __post_init__(self) -> None:
         if self.auth_method is AuthMethod.PASSWORD and not self.password:
@@ -185,6 +191,7 @@ class FileCredentialProvider:
             password=_optional_str(values.get("password")),
             private_key_path=Path(str(key_path)) if key_path else None,
             private_key_passphrase=_optional_str(values.get("private_key_passphrase")),
+            enable_password=_optional_str(values.get("enable_password")),
         )
 
     def get(self, ref: str) -> DeviceCredential:

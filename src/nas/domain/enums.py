@@ -6,16 +6,30 @@ from enum import StrEnum
 
 
 class Vendor(StrEnum):
-    """Network device vendors.
+    """Network device platforms.
 
-    Phase 1 only implements a driver for ``JUNIPER``. The remaining members are
-    declared so that adding a vendor is a new driver plus a registry entry, with
-    no schema migration. ``MOCK`` backs local development and CI, where no real
-    switch is reachable.
+    These are *platforms*, not companies. Cisco Catalyst and Cisco Nexus are
+    separate members because they need separate drivers: different command syntax,
+    different structured-output mechanisms, even different transports (SSH CLI
+    versus NX-API over HTTPS). Folding them into one "cisco" value would push a
+    branch-on-platform conditional into the driver.
+
+    Because ``switches.vendor`` is a plain string column with no CHECK constraint,
+    adding a member here needs no migration — only a driver and a registry entry.
     """
+
+    CISCO_IOSXE = "cisco_iosxe"
+    """Catalyst running IOS or IOS-XE (3650, 9300, 2960, ...)."""
+
+    CISCO_NXOS = "cisco_nxos"
+    """Nexus running NX-OS (N9K, ...)."""
 
     JUNIPER = "juniper"
     CISCO = "cisco"
+    """Legacy, ambiguous. Kept so existing rows still load; use a specific
+    platform instead. Deliberately not implemented — sync reports it as skipped
+    with a message naming the two replacements."""
+
     MIKROTIK = "mikrotik"
     ARISTA = "arista"
     HP = "hp"
@@ -33,11 +47,15 @@ class Vendor(StrEnum):
 
 # Kept in the domain rather than the driver package so the API can advertise
 # capability without importing device-facing code.
-_IMPLEMENTED_VENDORS: frozenset[Vendor] = frozenset({Vendor.JUNIPER, Vendor.MOCK})
+_IMPLEMENTED_VENDORS: frozenset[Vendor] = frozenset(
+    {Vendor.CISCO_IOSXE, Vendor.CISCO_NXOS, Vendor.JUNIPER, Vendor.MOCK}
+)
 
 _VENDOR_LABELS: dict[Vendor, str] = {
+    Vendor.CISCO_IOSXE: "Cisco Catalyst (IOS-XE)",
+    Vendor.CISCO_NXOS: "Cisco Nexus (NX-OS)",
     Vendor.JUNIPER: "Juniper",
-    Vendor.CISCO: "Cisco",
+    Vendor.CISCO: "Cisco (unspecified platform)",
     Vendor.MIKROTIK: "MikroTik",
     Vendor.ARISTA: "Arista",
     Vendor.HP: "HP",
