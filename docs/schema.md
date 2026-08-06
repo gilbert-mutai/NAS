@@ -2,8 +2,8 @@
 
 PostgreSQL 16. Migration `0001_initial`.
 
-NAS owns its own database with its own role. The CRM's database user has no access to it, and
-NAS's user has no access to the CRM's — least privilege at the database level, not just the
+NAS owns its own database with its own role. ClientManager's database user has no access to it, and
+NAS's user has no access to ClientManager's — least privilege at the database level, not just the
 application level.
 
 ## `switches` — device inventory
@@ -45,7 +45,7 @@ application level.
 **There is no credential column.** No `password`, no `ssh_password`, no `private_key`. Only
 `credential_ref`, a name resolved outside the database by a `CredentialProvider`. A database
 dump therefore grants no access to any network device. This is a deliberate departure from
-the CRM's existing `pbx_backups.CXFTPServer`, which stores `ssh_password` as plaintext.
+ClientManager's existing `pbx_backups.CXFTPServer`, which stores `ssh_password` as plaintext.
 
 **`is_reachable` is nullable on purpose.** `NULL` means "never checked", which is a different
 operational state from `FALSE` ("checked, and it was down"). Collapsing the two would make a
@@ -65,7 +65,7 @@ future service, or a bug in a repository still cannot write a blank hostname.
 | Column | Type | Null | Default | Notes |
 |---|---|---|---|---|
 | `id` | integer | no | serial | PK |
-| `name` | varchar(100) | no | | Unique. e.g. `crm` |
+| `name` | varchar(100) | no | | Unique. e.g. `clientmanager` |
 | `description` | text | yes | | |
 | `prefix` | varchar(16) | no | | Unique. 8 hex chars, the lookup handle |
 | `key_hash` | varchar(64) | no | | SHA-256 hex digest of the full key |

@@ -16,7 +16,7 @@ curl -H "X-API-Key: nas_1a2b3c4d_EXAMPLE-KEY-NOT-A-REAL-SECRET" \
 Keys are issued by an operator with shell access:
 
 ```bash
-nas apikey create --name crm --scopes switches:read,vlans:read,sync:read
+nas apikey create --name clientmanager --scopes switches:read,vlans:read,sync:read
 ```
 
 The key is displayed once and is not recoverable — only a SHA-256 digest is stored.
@@ -32,7 +32,7 @@ A route declares the scopes it needs; a key lacking any of them is rejected with
 | `sync:read` | Read synchronisation status and history (Milestone 2) |
 | `sync:write` | Trigger a synchronisation (Milestone 2) |
 
-Grant the minimum. The CRM needs the three read scopes plus, if you want a "Sync Now" button,
+Grant the minimum. ClientManager needs the three read scopes plus, if you want a "Sync Now" button,
 `sync:write` — nothing else.
 
 ### Rejection semantics
@@ -82,7 +82,7 @@ so a disallowed address cannot use the API to test key validity at all.
 
 ### Request correlation
 
-Send `X-Request-ID` and NAS will adopt and echo it, so a CRM request traces across both
+Send `X-Request-ID` and NAS will adopt and echo it, so a ClientManager request traces across both
 services. Omit it and NAS generates one. Inbound values are length-capped at 64 characters and
 stripped to `[A-Za-z0-9._-]`, because they land in log records.
 
@@ -202,11 +202,11 @@ One switch, unwrapped. Requires `switches:read`. Returns `404 SWITCH_NOT_FOUND` 
 | `GET /api/v1/sync/status` | Latest run |
 | `GET /api/v1/sync/runs`, `/runs/{id}` | Run history and per-switch detail |
 
-## Client notes for the Django CRM
+## Client notes for ClientManager
 
 - Call server-to-server. There is no CORS configuration by default and none is needed.
 - Set a timeout on every call and degrade to a visible "NAS unreachable" banner rather than a
-  500 — the CRM should stay usable when NAS is down.
+  500 — ClientManager should stay usable when NAS is down.
 - Forward a correlation id as `X-Request-ID` so a user-reported problem can be traced across
   both services' logs.
 - Read `pagination.has_next` rather than inferring the end of a collection from a short page.
@@ -280,7 +280,7 @@ Optional body: `{"switch_ids": [1, 2]}` to restrict the run.
 Runs are serialised by a PostgreSQL advisory lock: a second concurrent request gets **409
 CONFLICT** rather than queueing, so a double-clicked "Sync Now" cannot start two runs.
 
-Two behaviours the CRM should surface:
+Two behaviours ClientManager should surface:
 
 - A run where some switches fail completes with status `partial`. Read `switch_results` for
   per-switch attribution rather than treating the run as wholly good or bad.

@@ -180,7 +180,7 @@ class TestApiKeyRepository:
         generated = generate_api_key()
         created = await repository.create(
             NewApiKey(
-                name="crm",
+                name="clientmanager",
                 prefix=generated.prefix,
                 key_hash=generated.key_hash,
                 scopes=frozenset({Scope.SWITCHES_READ.value, Scope.VLANS_READ.value}),
@@ -198,7 +198,7 @@ class TestApiKeyRepository:
         generated = generate_api_key()
         await repository.create(
             NewApiKey(
-                name="crm",
+                name="clientmanager",
                 prefix=generated.prefix,
                 key_hash=generated.key_hash,
                 scopes=frozenset({Scope.SWITCHES_READ.value}),
@@ -218,7 +218,7 @@ class TestApiKeyRepository:
             generated = generate_api_key()
             await repository.create(
                 NewApiKey(
-                    name="crm",
+                    name="clientmanager",
                     prefix=generated.prefix,
                     key_hash=generated.key_hash,
                     scopes=frozenset({Scope.SWITCHES_READ.value}),
@@ -228,7 +228,7 @@ class TestApiKeyRepository:
         with pytest.raises(ConflictError):
             await repository.create(
                 NewApiKey(
-                    name="crm",
+                    name="clientmanager",
                     prefix=other.prefix,
                     key_hash=other.key_hash,
                     scopes=frozenset({Scope.SWITCHES_READ.value}),
@@ -240,7 +240,7 @@ class TestApiKeyRepository:
         generated = generate_api_key()
         created = await repository.create(
             NewApiKey(
-                name="crm",
+                name="clientmanager",
                 prefix=generated.prefix,
                 key_hash=generated.key_hash,
                 scopes=frozenset({Scope.SWITCHES_READ.value}),
@@ -262,13 +262,13 @@ class TestApiKeyRepository:
         generated = generate_api_key()
         await repository.create(
             NewApiKey(
-                name="crm",
+                name="clientmanager",
                 prefix=generated.prefix,
                 key_hash=generated.key_hash,
                 scopes=frozenset({Scope.SWITCHES_READ.value}),
             )
         )
-        assert await repository.revoke("crm") is True
+        assert await repository.revoke("clientmanager") is True
         session.expire_all()
 
         revoked = await repository.get_by_prefix(generated.prefix)
@@ -281,14 +281,14 @@ class TestApiKeyRepository:
         generated = generate_api_key()
         await repository.create(
             NewApiKey(
-                name="crm",
+                name="clientmanager",
                 prefix=generated.prefix,
                 key_hash=generated.key_hash,
                 scopes=frozenset({Scope.SWITCHES_READ.value}),
             )
         )
-        assert await repository.revoke("crm") is True
-        assert await repository.revoke("crm") is False
+        assert await repository.revoke("clientmanager") is True
+        assert await repository.revoke("clientmanager") is False
 
     async def test_revoking_an_unknown_name_reports_no_change(self, session: AsyncSession) -> None:
         assert await SqlAlchemyApiKeyRepository(session).revoke("nope") is False

@@ -163,7 +163,7 @@ class TestLookup:
         assert (await auth_client.get(f"{PATH}/lookup/{tag}")).status_code == 422
 
     async def test_staleness_is_reported(self, auth_client: AsyncClient) -> None:
-        """The CRM must be able to warn before trusting an 'available' verdict."""
+        """ClientManager must be able to warn before trusting an 'available' verdict."""
         body = (await auth_client.get(f"{PATH}/lookup/999")).json()
         assert "is_stale" in body
         assert "data_as_of" in body

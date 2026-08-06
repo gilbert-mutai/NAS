@@ -76,7 +76,7 @@ schema migration was required.
 
 ## Milestone 3 — Django integration
 
-A new `netops` app in the CRM. **No models, no migrations** — an HTTP client plus templates, which
+A new `netops` app in ClientManager. **No models, no migrations** — an HTTP client plus templates, which
 is what keeps the two systems genuinely decoupled.
 
 - Typed client: base URL, API key, timeouts, bounded retries, degrading to a visible
@@ -91,6 +91,16 @@ list, `requirements.txt`. **No existing app is modified.**
 Per the current scope decision, VLAN records will not link to `core.Client` or
 `threecx.ThreeCX`. Customer and service attribution shows whatever text the switch reports in the
 VLAN description.
+
+## Staging deployment — COMPLETE (2026-08-05)
+
+Deployed to App-Server / DB-Server at Westpoint and verified against a production
+WS-C3650-48PD (IOS-XE 16.6.9): 69 VLANs discovered, second run idempotent, availability
+lookup answering correctly through the ClientManager UI. See
+[deployment.md](deployment.md) and [architecture.md](architecture.md).
+
+Telnet support was scoped and then **dropped** — SSH was enabled on the switch instead,
+so the planned `transport` column and telnet driver were never built.
 
 ## Milestone 4 — Production hardening
 
@@ -111,7 +121,7 @@ new class of risk:
 - VLAN mapping, allocation or creation
 - Switch or interface configuration
 - Any write operation against a network device
-- Linking VLANs to CRM clients or 3CX records (deferred by explicit decision)
+- Linking VLANs to ClientManager clients or 3CX records (deferred by explicit decision)
 - Vendors other than Juniper (the abstraction is in place; drivers are not)
 - Workflow approvals, rollback, multi-site synchronisation
 
@@ -126,4 +136,4 @@ read-only, which enforces that at the device rather than trusting the code.
 | Full-disk encryption on the NAS host | The credentials file is `0600` but unencrypted at rest |
 | Prometheus metrics endpoint | Architecture is compatible; no exporter yet |
 | OpenTelemetry tracing | Request ids already provide cross-service correlation |
-| Link VLANs to CRM records | Deferred from Phase 1 by decision; revisit once discovery is proven |
+| Link VLANs to ClientManager records | Deferred from Phase 1 by decision; revisit once discovery is proven |

@@ -143,9 +143,11 @@ class TestErrorEnvelope:
         assert response.json()["error"]["request_id"] == response.headers["X-Request-ID"]
 
     async def test_inbound_request_id_is_propagated(self, auth_client: AsyncClient) -> None:
-        """A correlation id set by the CRM must flow through NAS and back."""
-        response = await auth_client.get(PROTECTED_PATH, headers={"X-Request-ID": "crm-abc-123"})
-        assert response.headers["X-Request-ID"] == "crm-abc-123"
+        """A correlation id set by ClientManager must flow through NAS and back."""
+        response = await auth_client.get(
+            PROTECTED_PATH, headers={"X-Request-ID": "clientmanager-abc-123"}
+        )
+        assert response.headers["X-Request-ID"] == "clientmanager-abc-123"
 
     async def test_hostile_request_id_is_sanitised(self, auth_client: AsyncClient) -> None:
         response = await auth_client.get(

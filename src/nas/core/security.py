@@ -46,7 +46,7 @@ class Scope(StrEnum):
         return frozenset(member.value for member in cls)
 
 
-# Convenience bundle for the Django CRM, which only ever reads and triggers syncs.
+# Convenience bundle for ClientManager, which only ever reads and triggers syncs.
 READ_ONLY_SCOPES: tuple[Scope, ...] = (
     Scope.VLANS_READ,
     Scope.SWITCHES_READ,

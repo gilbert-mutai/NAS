@@ -33,7 +33,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     """Assigns a request id, binds log context, and emits one access log line.
 
     An inbound ``X-Request-ID`` is honoured so a correlation id set by the Django
-    CRM (or Nginx) flows through NAS logs and back out on the response. Inbound
+    ClientManager (or Nginx) flows through NAS logs and back out on the response. Inbound
     values are length-capped and sanitised — they land in log records, so they
     are treated as untrusted input.
     """

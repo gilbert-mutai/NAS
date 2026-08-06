@@ -231,3 +231,26 @@ Real `show version` output **wraps**, putting `Version 16.12.05b` on a continuat
 line whose only marker is uppercase `RELEASE SOFTWARE`. A single-line fixture passed;
 the wrapped one did not. The fix scans the whole output, anchored on a digit, and is
 now verified against 3650, 2960 and 9300 banner shapes.
+
+---
+
+## Real-device fixtures
+
+`tests/fixtures/switch01_westpoint_show_vlan_brief.txt` is `show vlan brief` recorded from
+a production WS-C3650-48PD (IOS-XE 16.6.9, stack member 3, 69 VLANs).
+`tests/unit/test_cisco_iosxe_real_device.py` asserts against it.
+
+This matters more than the count of tests it adds. Every other Cisco fixture in the suite
+was written by hand from knowledge of the format — a guess, however well informed. This one
+is evidence. It caught a real bug immediately: `parse_version` filtered lines
+case-sensitively and missed the continuation line that real `show version` output wraps onto.
+
+What the real output exercises that hand-written fixtures did not:
+
+- VLAN 1 carrying **52 ports across 13 continuation lines**
+- 68 of 69 VLANs with a **blank** Ports column, because they are trunk-carried
+- Stack-member interface naming (`Gi3/0/x`, not `Gi1/0/x`)
+- Names like `VLAN0095-LDAP` and `prod.js_db-svrs` — digits, dots, underscores
+- All four IOS-created defaults (1002–1005) present and needing exclusion
+
+When another platform reaches real hardware, record its output the same way.

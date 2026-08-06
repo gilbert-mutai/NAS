@@ -5,13 +5,14 @@ switches, discovers their state, stores it in PostgreSQL, and serves it over a v
 REST API.
 
 Its purpose is to remove the need for engineers to SSH into production switches for routine
-provisioning. Consumers — currently the Angani CRM — read from this API and never touch a
+provisioning. Consumers — currently Angani ClientManager — read from this API and never touch a
 switch directly, never hold switch credentials, and never execute network commands.
 
-**Status: Phase 1 discovery is working.** Device inventory, API authentication, the operational
-spine, VLAN discovery with reconciliation, and drivers for Cisco Catalyst (IOS-XE), Cisco Nexus
-(NX-OS) and Juniper. The CRM consumes it through its `netops` app. Production hardening —
-audit log, rate limiting, staging deployment — is the remaining milestone.
+**Status: Phase 1 discovery is live on real hardware.** Deployed at Westpoint and synchronising a
+production Catalyst 3650 (69 VLANs) every 15 minutes. ClientManager consumes it through its
+`netops` app. Remaining: Milestone 4 hardening — audit log, rate limiting, Nginx, security review.
+
+See [the architecture diagram](docs/architecture.md) for the deployed topology.
 
 ---
 
@@ -20,7 +21,7 @@ audit log, rate limiting, staging deployment — is the remaining milestone.
 | Document | Covers |
 |---|---|
 | **[docs/handoff.md](docs/handoff.md)** | **Start here when resuming** — current state, how to restart the environment, what is next |
-| [docs/architecture.md](docs/architecture.md) | Layering, dependency rules, request flow, extension points |
+| [docs/architecture.md](docs/architecture.md) | **Topology and sequence diagrams**, layering, dependency rules, the driver pattern |
 | [docs/schema.md](docs/schema.md) | Tables, columns, constraints, migration policy |
 | [docs/api.md](docs/api.md) | Endpoints, auth, scopes, response and error contracts |
 | [docs/security.md](docs/security.md) | Trust boundary, credential handling, threat notes, review |
@@ -33,10 +34,10 @@ audit log, rate limiting, staging deployment — is the remaining milestone.
 
 ## Why this is a separate service
 
-The Django CRM handles authentication, authorisation, UI and business workflow. NAS handles
+ClientManager handles authentication, authorisation, UI and business workflow. NAS handles
 device access. The split exists so that **the credentials that can reach production switches
 live in exactly one process, on one host, inside the private network** — not in the
-web-facing application. A compromise of the CRM does not yield switch access.
+web-facing application. A compromise of ClientManager does not yield switch access.
 
 The two communicate only over HTTP, with a scoped API key and an IP allowlist.
 
@@ -47,7 +48,7 @@ The two communicate only over HTTP, with a scoped API key and an IP allowlist.
 Requires Python 3.12+ and Docker (for PostgreSQL).
 
 ```bash
-# 1. PostgreSQL on port 5434 (5432 is the CRM's, 5433 may be in use)
+# 1. PostgreSQL on port 5434 (5432 is ClientManager's, 5433 may be in use)
 docker compose up -d
 
 # 2. Virtualenv and dependencies
@@ -65,8 +66,8 @@ chmod 600 credentials.yaml
 # 5. Schema
 nas db upgrade
 
-# 6. An API key for the CRM. Printed once — copy it now.
-nas apikey create --name crm --scopes switches:read,vlans:read,sync:read,sync:write
+# 6. An API key for ClientManager. Printed once — copy it now.
+nas apikey create --name clientmanager --scopes switches:read,vlans:read,sync:read,sync:write
 
 # 7. Register switches. --credential-ref is a NAME from credentials.yaml, never a
 #    password. Note the platform values and the Nexus port.
@@ -121,9 +122,9 @@ switch requires shell access to the host, so a leaked API key cannot be used to 
 keys or to point NAS at an attacker-controlled device.
 
 ```bash
-nas apikey create --name crm --scopes switches:read,vlans:read   # prints the key once
+nas apikey create --name clientmanager --scopes switches:read,vlans:read   # prints the key once
 nas apikey list                                                  # never prints key material
-nas apikey revoke crm                                            # effective on next request
+nas apikey revoke clientmanager                                            # effective on next request
 nas apikey scopes
 
 nas switch add --name sw1 --hostname 10.0.0.1 --vendor cisco_iosxe --credential-ref cisco-catalyst
@@ -144,7 +145,7 @@ nas serve --host 127.0.0.1 --port 8000 --reload
 
 `nas sync run` shares the SyncService and the advisory lock with the running API, so it is safe to
 drive from a systemd timer alongside the service. Set `NAS_SYNC_ENABLED=false` to disable the
-embedded scheduler and use timers instead — matching how the CRM schedules its own jobs.
+embedded scheduler and use timers instead — matching how ClientManager schedules its own jobs.
 
 ---
 
@@ -218,6 +219,6 @@ without a database or a switch.
 
 ## A note on this repository's location
 
-This is a **separate git repository** that lives inside the CRM working directory for
-development convenience. `/nas/` is in the CRM's `.gitignore`, so it can never be committed
-into the CRM's history. The two projects share no code — only an HTTP contract.
+This is a **separate git repository** that lives inside ClientManager working directory for
+development convenience. `/nas/` is in ClientManager's `.gitignore`, so it can never be committed
+into ClientManager's history. The two projects share no code — only an HTTP contract.

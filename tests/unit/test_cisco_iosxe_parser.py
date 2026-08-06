@@ -172,6 +172,71 @@ class TestEnrichment:
         assert enrich_with_svis(vlans, {}) is vlans
 
 
+# Recorded verbatim from switch-01.westpoint, a real WS-C3650-48PD running
+# IOS-XE 16.6.9. Trimmed of legal boilerplate only; every line that matters to the
+# parser is untouched. Fixtures built by hand are a guess — this is evidence.
+REAL_3650_VERSION = textwrap.dedent(
+    """
+    Cisco IOS XE Software, Version 16.06.09
+    Cisco IOS Software [Everest], Catalyst L3 Switch Software (CAT3K_CAA-UNIVERSALK9-M), Version 16.6.9, RELEASE SOFTWARE (fc3)
+    Technical Support: http://www.cisco.com/techsupport
+    Copyright (c) 1986-2021 by Cisco Systems, Inc.
+    Compiled Wed 24-Feb-21 07:17 by mcpre
+
+    Cisco IOS-XE software, Copyright (c) 2005-2021 by cisco Systems, Inc.
+
+    ROM: IOS-XE ROMMON
+    BOOTLDR: CAT3K_CAA Boot Loader (CAT3K_CAA-HBOOT-M) Version 4.66, RELEASE SOFTWARE (P)
+
+    switch-01.westpoint uptime is 1 day, 2 hours, 28 minutes
+    System image file is "flash:packages.conf"
+
+    Technology Package License Information:
+    Technology-package                   Technology-package
+    Current             Type             Next reboot
+    lanbasek9           Permanent        lanbasek9
+
+    cisco WS-C3650-48PD (MIPS) processor (revision Q0) with 852817K/6147K bytes of memory.
+    Processor board ID FDO2140V04X
+    50 Gigabit Ethernet interfaces
+
+    Base Ethernet MAC Address          : 6c:b2:ae:9d:c2:80
+    Motherboard Assembly Number        : 73-15897-06
+    Motherboard Serial Number          : FDO21392QVG
+    Model Revision Number              : Q0
+    Motherboard Revision Number        : A0
+    Model Number                       : WS-C3650-48PD
+    System Serial Number               : FDO2140V04X
+
+    Switch Ports Model              SW Version        SW Image              Mode
+    *    3 52    WS-C3650-48PD      16.6.9            CAT3K_CAA-UNIVERSALK9 INSTALL
+
+    Configuration register is 0x102
+    """
+).strip("\n")
+
+
+class TestRealDeviceVersion:
+    """Against output recorded from an actual WS-C3650-48PD (IOS-XE 16.6.9)."""
+
+    def test_extracts_model_and_version(self) -> None:
+        assert parse_version(REAL_3650_VERSION) == ("WS-C3650-48PD", "16.06.09")
+
+    def test_does_not_mistake_the_bootloader_version(self) -> None:
+        """'Boot Loader ... Version 4.66' appears before the model lines."""
+        assert parse_version(REAL_3650_VERSION)[1] != "4.66"
+
+    def test_does_not_mistake_model_revision_for_the_model(self) -> None:
+        """'Model Revision Number : Q0' is a near-miss for the Model Number regex."""
+        assert parse_version(REAL_3650_VERSION)[0] != "Q0"
+
+    def test_does_not_mistake_the_software_banner_for_the_model(self) -> None:
+        """Three lines begin with 'Cisco IOS...', which the fallback would grab."""
+        model = parse_version(REAL_3650_VERSION)[0]
+        assert model is not None
+        assert not model.upper().startswith("IOS")
+
+
 class TestVersionParsing:
     def test_extracts_model_and_version(self) -> None:
         output = textwrap.dedent(

@@ -81,7 +81,7 @@ class SwitchRow(Base, TimestampMixin):
 
 
 class ApiKeyRow(Base, TimestampMixin):
-    """An API credential issued to a consumer such as the Django CRM.
+    """An API credential issued to a consumer such as ClientManager.
 
     Only the lookup prefix and a SHA-256 digest are stored; the plaintext key is
     displayed once at creation and never recoverable.

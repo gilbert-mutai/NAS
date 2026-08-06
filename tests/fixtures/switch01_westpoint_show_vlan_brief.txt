@@ -1,0 +1,88 @@
+
+VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                          active    Gi3/0/1, Gi3/0/2, Gi3/0/3, Gi3/0/4
+                                                Gi3/0/5, Gi3/0/6, Gi3/0/7, Gi3/0/8
+                                                Gi3/0/9, Gi3/0/10, Gi3/0/11, Gi3/0/12
+                                                Gi3/0/13, Gi3/0/14, Gi3/0/15, Gi3/0/16
+                                                Gi3/0/17, Gi3/0/18, Gi3/0/19, Gi3/0/20
+                                                Gi3/0/21, Gi3/0/22, Gi3/0/23, Gi3/0/24
+                                                Gi3/0/25, Gi3/0/26, Gi3/0/27, Gi3/0/28
+                                                Gi3/0/29, Gi3/0/30, Gi3/0/31, Gi3/0/32
+                                                Gi3/0/33, Gi3/0/34, Gi3/0/35, Gi3/0/36
+                                                Gi3/0/37, Gi3/0/38, Gi3/0/39, Gi3/0/40
+                                                Gi3/0/41, Gi3/0/42, Gi3/0/43, Gi3/0/44
+                                                Gi3/0/45, Gi3/0/46, Gi3/0/47, Gi3/0/48
+                                                Gi3/1/1, Gi3/1/2, Te3/1/3, Te3/1/4
+2    VLAN0002                         active 
+5    VLAN0005                         active 
+14   VLAN0014                         active 
+15   VLAN0015                         active 
+30   VLAN0030                         active 
+35   VLAN0035                         active 
+40   VLAN0040                         active 
+60   VLAN0060                         active 
+64   VLAN0064                         active 
+70   VLAN0070                         active 
+75   VLAN0075                         active 
+95   VLAN0095-LDAP                    active 
+97   VLAN0097                         active 
+98   VLAN0098                         active 
+99   VLAN0099                         active 
+100  VLAN0100                         active 
+101  VLAN0101                         active 
+105  VLAN0105                         active 
+106  VLAN0106                         active 
+107  VLAN0107                         active 
+110  VLAN0110                         active 
+111  VLAN0111                         active 
+112  TechUPSMon                       active 
+114  VLAN0114                         active 
+115  VLAN0115                         active 
+119  VLAN0119                         active 
+120  VLAN0120                         active 
+121  VLAN0121                         active 
+122  VLAN0122                         active 
+123  VLAN0123                         active 
+201  MX-BRIDGE                        active 
+209  VLAN0209                         active 
+219  VLAN0219                         active 
+220  VLAN0220                         active 
+323  Interswitch                      active 
+324  VLAN0324                         active 
+363  prod.js_db-svrs                  active 
+531  ReCo-Systest-1                   active 
+533  ReCo-Systest-3                   active 
+534  ReCo-Systest-4                   active 
+535  ReCo-Systest-5                   active 
+536  ReCo-Systest-6                   active 
+537  ReCo-Systest-7                   active 
+540  ReCo-Systest-10                  active 
+551  ReCo-UAT-1                       active 
+552  ReCo-UAT-2                       active 
+553  ReCo-UAT-3                       active 
+554  ReCo-UAT-4                       active 
+555  ReCo-UAT-5                       active 
+556  ReCo-UAT-6                       active 
+559  ReCo-UAT-9                       active 
+560  ReCo-UAT-10                      active 
+601  ReCo-Live-1                      active 
+603  ReCo-Live-3                      active 
+604  ReCo-Live-4                      active 
+606  ReCo-Live-6                      active 
+607  ReCo-Live-7                      active 
+608  ReCo-Live-8                      active 
+609  ReCo-DB-Inter                    active 
+700  Colt-MPLS                        active 
+900  New-AD-LAN                       active 
+901  New-EUC-Workstations             active 
+902  STST-WiFi                        active 
+903  Rubrik-Backup                    active 
+904  VLAN0904                         active 
+905  VLAN0905                         active 
+906  VLAN0906                         active 
+950  VLAN0950                         active 
+1002 fddi-default                     act/unsup 
+1003 token-ring-default               act/unsup 
+1004 fddinet-default                  act/unsup 
+1005 trnet-default                    act/unsup 
