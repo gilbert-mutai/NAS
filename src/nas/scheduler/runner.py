@@ -13,7 +13,7 @@ this module is the only thing that changes.
 
 The CLI entrypoint (``nas sync run``) exists precisely so the scheduler can be
 disabled (``NAS_SYNC_ENABLED=false``) and a systemd timer used instead, matching
-how the CRM already schedules its jobs.
+how ClientManager already schedules its jobs.
 """
 
 from __future__ import annotations

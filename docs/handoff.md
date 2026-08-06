@@ -1,102 +1,82 @@
 # Handoff — resume here
 
-Last worked: **2026-08-04**. Phase 1 discovery is working end to end, across the
-real fleet's platforms.
+Last worked: **2026-08-05**. Phase 1 discovery is **live on real hardware**. The
+ClientManager rename, the architecture diagrams and the docs pass are done.
+
+**Next up: Milestone 4 — production hardening.**
 
 ---
 
-## Where things stand
+## Current state
 
 | | |
 |---|---|
-| NAS repo | `nas/` — separate git repo inside the CRM working directory, gitignored from it |
-| Remote | `https://github.com/gilbert-mutai/NAS.git` |
-| `master` | `1ddceb4` — Milestone 1 |
-| `nas-gilbert` | `0d79eae` — Milestone 2, pushed. Cisco driver work is **uncommitted** on top |
-| Quality gate | ruff clean · `mypy --strict` clean (59 files) · **504 tests** · no migration drift · `pip-audit` clean |
-| Schema | `0002_vlan_discovery`. The Cisco work needed **no migration** |
-| CRM side | `netops` app complete, **uncommitted** (145 CRM tests pass) |
+| NAS repo | `nas/` — separate git repo inside the ClientManager working dir, gitignored from it |
+| NAS remote | `https://github.com/gilbert-mutai/NAS.git` · `master` / `nas-gilbert` |
+| ClientManager | `master` / `gilbert` |
+| Quality gate | ruff · `mypy --strict` (59 files) · **508 NAS tests** · **145 ClientManager tests** · no migration drift |
+| Staging | live, syncing a production Catalyst 3650 every 15 min |
 
-### Delivered
+Shipped: Milestones 1–3, the Cisco drivers, the staging deployment, and the rename.
+See [roadmap.md](roadmap.md).
 
-1. **Milestone 1** — foundation, security spine, device inventory.
-2. **Milestone 2** — VLAN discovery, reconciliation, sync engine, API.
-3. **Milestone 3** — Django `netops` app: VLAN search, availability lookup, switch
-   list, sync status.
-4. **Cisco drivers** — inserted ahead of hardening once the infra team reported the
-   primary fleet is Cisco, not Juniper.
+## The deployment
 
-### Platforms
+Diagrammed in [architecture.md](architecture.md). Real addresses:
 
-| `--vendor` | Devices | Transport | Extra |
-|---|---|---|---|
-| `cisco_iosxe` | Catalyst 3650, 9300, 2960 | SSH CLI :22 | `[cisco]` → netmiko |
-| `cisco_nxos` | Nexus 9000 | NX-API JSON/HTTPS **:443** | none |
-| `juniper` | EX, QFX | NETCONF :22 | `[juniper]` → PyEZ |
-| `mock` | local dev / CI | none | none |
+| Host | Mgmt LAN | Private link |
+|---|---|---|
+| App-Server | 192.168.95.238 | 10.10.10.238 |
+| DB-Server | 192.168.95.241 | 10.10.10.241 |
+| switch-01.westpoint | 192.168.95.237 | — |
 
-`cisco` (bare) is legacy and deliberately unimplemented — sync skips it with a
-message naming the two replacements.
+NAS runs from `/opt/nas/app` as user `nas`, uvicorn on `127.0.0.1:8000` via
+`nas.service`. Database `nas` on DB-Server, reachable over the `10.10.10.x` link only.
+Switch is a `WS-C3650-48PD`, IOS-XE 16.6.9, **69 VLANs**, read-only account
+`nas-readonly` at privilege 1 over SSH.
 
----
+**venv + systemd, not Docker** — Gilbert's choice, for uniformity with ClientManager. The
+Dockerfile stays for CI and parity checks.
 
-## Uncommitted work
-
-Both repos have unstaged changes. Nothing is lost, but nothing is saved either.
+### Working on it
 
 ```bash
-# NAS: the Cisco driver milestone
-cd nas && git status
+# App-Server. /opt/nas is mode 0700, so run as the nas user and cd *inside* that shell
+sudo -u nas sh -c 'cd /opt/nas/app && .venv/bin/nas sync run'
+sudo -u nas sh -c 'cd /opt/nas/app && .venv/bin/nas sync status'
+systemctl --no-pager status nas.service
+journalctl -u nas.service -f
 
-# CRM: the netops app + the migration fix
-cd .. && git status
+# From a laptop
+ssh -N -L 8126:127.0.0.1:8000 infra-admin@192.168.95.238
+# ClientManager .env:  NAS_API_BASE_URL=http://127.0.0.1:8126
 ```
 
-The CRM side also carries a **fix to two pre-existing migrations**
-(`threecx/0003`, `pm/0005`) that used PostgreSQL-only `ALTER TABLE … DROP
-CONSTRAINT`. That made *every* database-backed test unrunnable under
-`settings_ci` (SQLite) — CI would have failed the moment anyone added one. Worth
-committing separately from the feature work.
+Two things that will waste your time otherwise:
 
----
+- **Django does not reload `.env`.** After editing it, kill and restart `runserver`, or
+  the UI reports "Network Automation Service is not configured" while the file looks
+  correct.
+- **Long connection URIs break when pasted** across a terminal line wrap — the newline
+  lands inside the password. Build them from a variable:
+  `read -rs -p "pw: " PW; psql "postgresql://nas:$PW@10.10.10.241:5432/nas" -c "select 1"`
 
-## Restarting the environment
+### Local development
 
 ```bash
-cd ~/Documents/Personal/Projects/ClientManager/nas
-docker compose up -d                       # PostgreSQL on 127.0.0.1:5434
+cd nas
+docker compose up -d                      # PostgreSQL on 127.0.0.1:5434
 export PATH="$PWD/.venv/bin:$PATH"
-
-nas db current                             # expect 0002_vlan_discovery
-nas switch list
-nas sync run                               # exits 1 on a partial run, by design
-
 export NAS_TEST_DATABASE_URL=postgresql+asyncpg://nas:nas@localhost:5434/nas_test
-pytest                                     # 504
+pytest                                    # 508
 ```
 
-**Port 5434 is deliberate.** 5432 is the CRM's PostgreSQL; 5433 is taken by an
-unrelated `isp_postgres` container on this machine.
+Port 5434 is deliberate: 5432 is ClientManager's PostgreSQL, 5433 belongs to an unrelated
+container on this machine.
 
-`nas_dev` holds mock switches plus deliberately broken ones (unreachable, missing
-credential, legacy `cisco` vendor, Juniper with no PyEZ installed). A local run is
-*expected* to be `partial` — that keeps every failure path visible.
-
-### CRM side
-
-```bash
-cd ~/Documents/Personal/Projects/ClientManager
-export DJANGO_SETTINGS_MODULE=anganicrm.settings_ci
-./venv/bin/python manage.py test            # 145
-
-# Screens against a live NAS
-cd nas && NAS_SYNC_ENABLED=false nas serve --port 8126 &
-cd .. && export NETOPS_LIVE_NAS_URL=http://127.0.0.1:8126 \
-                NETOPS_LIVE_NAS_KEY=nas_...
-./venv/bin/python manage.py test netops.tests.test_live
-```
-
-### Local experiments
+`nas_dev` holds mock switches plus deliberately broken ones — unreachable, missing
+credential, legacy `cisco` vendor, Juniper with no PyEZ installed. A local run is
+*expected* to be `partial`; that keeps every failure path visible.
 
 ```bash
 NAS_MOCK_DRIFT=7 nas sync run   # changes mock VLAN sets -> real creates/updates/removals
@@ -107,74 +87,61 @@ Hostname markers inject driver failures: `-unreachable`, `-badauth`, `-garbled`.
 
 ---
 
-## What the infra team still owes us
-
-None of these block work; all of them improve it.
-
-1. **Sample device output** — the single most valuable item. Recorded
-   `show vlan brief`, `show ip interface brief`, `show vlan | json` and
-   `show version` from a real 3650 and a real N9K would replace hand-built
-   fixtures with genuine ones. Redacted names are fine; the *shape* is what
-   matters.
-2. **Is `feature nxapi` enabled on the N9Ks?** If enabling it is unacceptable, an
-   NX-OS-over-SSH fallback driver is needed (the parser would be reused; only the
-   transport changes).
-3. **Read-only service accounts, or TACACS with enable?** `enable_password` exists
-   in the credential store and is wired into the IOS-XE driver, but has never been
-   exercised against a real device.
-4. **Is VXLAN in use on the Nexus fleet?** Determines whether `vn-segment`
-   enrichment matters, and whether the `show running-config vlan` privilege is
-   worth requesting.
-
----
-
 ## Next: Milestone 4 — production hardening
 
-The last piece of Phase 1. See [roadmap.md](roadmap.md).
-
-1. **Audit log** — the `audit_log` table was designed in Milestone 1 but never
-   built. Every sync trigger and every authenticated call should land in it.
+1. **Audit log.** The `audit_log` table was designed in Milestone 1 and never built.
+   Every sync trigger and every authenticated call should land in it.
 2. **Rate limiting** on `/api/v1`.
-3. **Real-device validation.** The highest-value item once a Cisco switch is
-   reachable from staging: `pip install '.[devices]'`, register one Catalyst and one
-   Nexus, and run a sync. The parsers are tested against realistic fixtures but
-   **have never seen a real device**, and netmiko/PyEZ have never been installed
-   here.
-4. **Staging deployment** — Nginx + systemd, IP allowlist, `NAS_ENVIRONMENT=staging`
-   (which refuses to boot without an allowlist).
-5. **Security review** of the whole Phase 1 surface.
+3. **Nginx** in front of uvicorn on App-Server, then set
+   `NAS_TRUST_PROXY_HEADERS=true` — and not before, or `X-Forwarded-For` becomes
+   spoofable past the IP allowlist.
+4. **Deploy ClientManager's side properly.** It currently reaches NAS through an SSH
+   tunnel from a laptop. When ClientManager is deployed, add its host to
+   `NAS_ALLOWED_IP_RANGES` as a `/32`.
+5. **Revoke the old `crm` API key** in the staging database once nothing uses it:
+   `nas apikey list` then `nas apikey revoke crm`. The active key is `clientmanager`.
+6. **Security review** of the whole Phase 1 surface.
 
-### Then, worth considering
+## Known gaps, deliberately deferred
 
-- **Trunk/access detection on Cisco** via `show interfaces switchport`. Note the
-  cost: every interface signature changes, so the next sync reports every Cisco
-  VLAN as `updated` exactly once. Expected, not a bug.
-- **Retiring the plaintext SSH password in the CRM's `pbx_backups`** app
-  (`CXFTPServer.ssh_password`). NAS's credential design is the replacement pattern,
-  now proven across three platforms.
-- **NETCONF for IOS-XE 16.x+**, as an optimisation over CLI parsing.
+- **Trunk membership.** Only VLAN 1 shows ports; the other 68 are trunk-carried, and
+  `show vlan brief` reports access ports only. Availability lookup is unaffected and
+  accurate — but "where is this VLAN used" is sparse. Fixing needs
+  `show interfaces trunk`, and note the cost: interface signatures change, so the next
+  sync reports every Cisco VLAN as `updated` exactly once. Not a bug; expect it.
+- **Nexus and Juniper drivers have never met real hardware.** Only the Catalyst path has.
+  Both are covered by fixtures and `httpx.MockTransport`, which is not the same thing.
+- **~96 SSH logins/day** to a production switch from the 15-minute schedule. If infra's
+  AAA alerting objects, raise the interval rather than disabling the scheduler.
+- **`pbx_backups` plaintext `ssh_password`** in ClientManager. NAS's credential design is
+  the replacement pattern, now proven across three platforms.
+- **The Django package is still `anganicrm`.** Renaming it touches
+  `DJANGO_SETTINGS_MODULE`, systemd units and the deploy pipeline — a separate, riskier
+  change, deliberately not bundled with the prose rename.
 
----
+## Things that have bitten us
 
-## Things to be careful about
+Four bugs so far passed both `ruff` and `mypy --strict` and were caught only by running
+the code. Two patterns worth carrying forward:
 
-**Three bugs so far have passed both `ruff` and `mypy --strict`** and were caught
-only by running the code. Two patterns worth remembering:
+- **Assert identity, not counts.** A leaked loop variable made every reconciliation plan
+  entry reference the wrong record; every count was correct.
+- **Use recorded output, not hand-written fixtures.** `parse_version` worked on a
+  single-line banner and failed on the wrapped output real devices emit. The real 3650
+  output now lives in `tests/fixtures/`.
 
-1. **Assert identity, not just counts.** A leaked loop variable made every
-   reconciliation plan entry point at the wrong record; the counts were all correct.
-2. **Use realistic fixtures.** `parse_version` worked on a single-line banner and
-   failed on the wrapped one real devices emit.
+Also: **a local test run is not automatically equivalent to CI.** A local `.env` with
+`DEBUG=True` masked a staticfiles-manifest failure that turned CI red. `settings_ci` now
+pins `DEBUG=False` so the two match.
 
-**Editing with `sed`/string replacement after `ruff format` has run is how two of
-them were introduced.** A pattern that no longer matches fails silently and leaves
-half a rename behind. Prefer targeted edits against current file contents, and
-re-read before patching.
+And: **editing with `sed` after `ruff format` has run** is how two of those bugs were
+introduced — a pattern that no longer matches fails silently and leaves half a rename
+behind. Prefer targeted edits against current file contents.
 
 ## Reading order for a cold start
 
 1. This file
-2. [architecture.md](architecture.md) — layering, the driver pattern, where safety lives
+2. [architecture.md](architecture.md) — topology diagram, layering, where safety lives
 3. [decisions.md](decisions.md) — why things are as they are, including the Cisco pivot
-4. [testing.md](testing.md) — what "done" means, and the isolation gotcha
-5. [api.md](api.md) — the contract the CRM consumes
+4. [deployment.md](deployment.md) — matches what is actually running
+5. [testing.md](testing.md) — what "done" means

@@ -2,7 +2,7 @@
 
 Chosen over screen-scraping the CLI because PyEZ speaks NETCONF and returns
 structured XML. Parsing ``show vlans`` text output would break on Junos version
-changes and table-width differences — an unacceptable foundation for data the CRM
+changes and table-width differences — an unacceptable foundation for data ClientManager
 will treat as authoritative.
 
 Two implementation notes that matter:

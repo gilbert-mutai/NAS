@@ -68,7 +68,7 @@ class Switch:
 
 @dataclass(frozen=True, slots=True)
 class ApiKey:
-    """A credential issued to an API consumer, e.g. the Django CRM."""
+    """A credential issued to an API consumer, e.g. ClientManager."""
 
     id: int
     name: str

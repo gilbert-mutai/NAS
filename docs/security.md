@@ -5,12 +5,12 @@
 NAS exists so that **exactly one process, on one host, inside the private network, holds the
 credentials that can reach production switches.**
 
-The Django CRM is internet-adjacent with a broad attack surface: sessions, file uploads, email
+ClientManager is internet-adjacent with a broad attack surface: sessions, file uploads, email
 sending, many user roles, a large dependency tree. NAS is small, single-purpose, private, and
-exposes a read-only API. Moving device access behind that boundary means a CRM compromise does
+exposes a read-only API. Moving device access behind that boundary means a ClientManager compromise does
 not become a network compromise.
 
-Consequently the CRM **never**: opens an SSH connection, stores a switch credential, or executes
+Consequently ClientManager **never**: opens an SSH connection, stores a switch credential, or executes
 a network command. It calls an HTTP API and renders the result.
 
 ## Credential handling
@@ -23,7 +23,7 @@ Secrets live in a `0600` YAML file outside the repository, resolved at use time 
 
 **A NAS database dump therefore grants no access to any network device.**
 
-This is a deliberate departure from the pattern in the CRM's [`pbx_backups`
+This is a deliberate departure from the pattern in ClientManager's [`pbx_backups`
 app](../../pbx_backups/models.py), where `CXFTPServer.ssh_password` is a plaintext
 `CharField` — a database dump there hands over production SSH access. NAS should not reproduce
 that, and once Milestone 3 lands, the same pattern can be used to retire it.
@@ -111,7 +111,7 @@ escaped so a search term cannot broaden the query.
 
 | Threat | Mitigation | Residual risk |
 |---|---|---|
-| CRM compromised | No credentials or device access in the CRM; NAS key is read-only and scoped | Attacker can read VLAN inventory via the CRM's key |
+| ClientManager compromised | No credentials or device access in ClientManager; NAS key is read-only and scoped | Attacker can read VLAN inventory via ClientManager's key |
 | NAS database exfiltrated | No secrets stored; API key hashes are not replayable | Inventory metadata (hostnames, sites) is disclosed |
 | API key leaked | Scoped read-only; IP allowlist still applies; revocable in one command | Read access from an allowlisted host until revoked |
 | Stolen NAS host disk | Credentials are `0600` and outside the DB, but unencrypted at rest | Full switch access. **Mitigate with full-disk encryption on the NAS host** |
@@ -141,10 +141,10 @@ validation errors not echoing input.
 
 1. Enable full-disk encryption on the NAS host.
 2. Create a dedicated read-only account on each switch; do not reuse an admin account.
-3. Set `NAS_ALLOWED_IP_RANGES` to the CRM host only — `/32`, not a subnet.
+3. Set `NAS_ALLOWED_IP_RANGES` to ClientManager host only — `/32`, not a subnet.
 4. Terminate TLS at Nginx and set `NAS_TRUST_PROXY_HEADERS=true` **only** once Nginx is actually
    in front and sets `X-Forwarded-For`.
 5. Consider `NAS_DOCS_ENABLED=false` in production; the OpenAPI document describes the whole
    attack surface.
 6. Give the API key an expiry (`--expires-days`) and rotate on a schedule.
-7. Restrict the NAS PostgreSQL role to its own database; the CRM's role must have no access.
+7. Restrict the NAS PostgreSQL role to its own database; ClientManager's role must have no access.

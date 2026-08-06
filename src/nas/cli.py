@@ -5,7 +5,7 @@ Issuing an API key or registering a switch requires shell access to the host, so
 a compromised API key cannot escalate into minting more keys or redirecting NAS
 at an attacker-controlled device.
 
-    nas apikey create --name crm --scopes switches:read,vlans:read,sync:read
+    nas apikey create --name clientmanager --scopes switches:read,vlans:read,sync:read
     nas switch add --name adc-core-sw1 --hostname 10.20.0.11 --vendor juniper \
                    --credential-ref juniper-core
     nas credentials check
@@ -91,7 +91,7 @@ def _parse_scopes(raw: str) -> frozenset[str]:
 # ── API keys ──────────────────────────────────────────────────────────────────
 @apikey_app.command("create")
 def apikey_create(
-    name: Annotated[str, typer.Option(help="Unique name for this key, e.g. 'crm'.")],
+    name: Annotated[str, typer.Option(help="Unique name for this key, e.g. 'clientmanager'.")],
     scopes: Annotated[str, typer.Option(help="Comma-separated scopes. See 'nas apikey scopes'.")],
     description: Annotated[str | None, typer.Option(help="Free-text note.")] = None,
     expires_days: Annotated[

@@ -1,32 +1,92 @@
 # Architecture
 
-## The system in two parts
+## Deployment topology
 
-```
-┌───────────────────────────────────┐         ┌──────────────────────────────────────┐
-│   Django CRM (anganicrm)          │         │   Network Automation Service (NAS)   │
-│                                   │         │                                      │
-│   • authentication, 2FA           │  HTTPS  │   • holds switch credentials         │
-│   • authorisation, roles          │ ──────► │   • SSH / NETCONF to devices         │
-│   • UI, reporting, search         │ X-API-  │   • discovery + reconciliation       │
-│   • consumes the NAS API          │  Key    │   • REST API, versioned              │
-│                                   │         │                                      │
-│   NEVER: SSH, credentials,        │         │   Private network only               │
-│          network commands         │         │   IP allowlist + scoped API keys     │
-└───────────────────────────────────┘         └──────────────────┬───────────────────┘
-                                                                 │ SSH / NETCONF
-                                                                 ▼
-                                                        ┌────────────────────┐
-                                                        │  Juniper switches  │
-                                                        │  (read-only acct)  │
-                                                        └────────────────────┘
+As actually deployed at Westpoint. Every address here is real.
+
+```mermaid
+flowchart TB
+    subgraph laptop["Developer laptop"]
+        CM["<b>ClientManager</b> — Django<br/>netops app · templates only<br/><i>stores no VLAN data</i>"]
+    end
+
+    subgraph appsrv["App-Server · 192.168.95.238 / 10.10.10.238"]
+        direction TB
+        NAS["<b>NAS</b> — FastAPI + uvicorn<br/>bound to 127.0.0.1:8000<br/><i>nas.service, user nas</i>"]
+        SCHED["APScheduler<br/><i>in-process, every 15 min</i>"]
+        CREDS["credentials.yaml · 0600<br/><b>switch credentials exist<br/>only here</b>"]
+    end
+
+    subgraph dbsrv["DB-Server · 10.10.10.241"]
+        PG[("PostgreSQL 16<br/>database <b>nas</b><br/><i>69 VLAN records</i>")]
+    end
+
+    subgraph mgmt["Management LAN · 192.168.95.0/24"]
+        SW["<b>switch-01.westpoint</b><br/>WS-C3650-48PD · IOS-XE 16.6.9<br/>69 VLANs · stack member 3"]
+    end
+
+    CM -->|"HTTP + X-API-Key<br/>via SSH tunnel<br/>-L 8126:127.0.0.1:8000"| NAS
+    SCHED -.->|"triggers sync"| NAS
+    CREDS -.->|"read at sync time"| NAS
+    NAS -->|"asyncpg over private link<br/>10.10.10.x only"| PG
+    NAS -->|"SSH · nas-readonly · privilege 1<br/>show vlan brief"| SW
+
+    classDef trusted fill:#fff4e6,stroke:#e8890c,stroke-width:2px
+    classDef consumer fill:#e8f2ff,stroke:#1565c0,stroke-width:2px
+    classDef store fill:#eaf7ee,stroke:#2e7d32,stroke-width:2px
+    classDef device fill:#f3e8ff,stroke:#7b1fa2,stroke-width:2px
+    class NAS,SCHED,CREDS trusted
+    class CM consumer
+    class PG store
+    class SW device
 ```
 
-The boundary is the point of the design. Everything that can reach a switch lives on one
-side of it. The CRM is internet-adjacent and has a large attack surface (sessions, uploads,
-email, many user roles); NAS is a small, single-purpose service on a private network with a
-narrow API. Putting device credentials only in NAS means a CRM compromise does not become a
-network compromise.
+**The orange boundary is the point of the design.** Everything that can reach a switch
+lives inside App-Server. ClientManager is internet-adjacent with a large attack surface —
+sessions, uploads, email, many user roles — while NAS is a small single-purpose service on
+a private network behind an IP allowlist and scoped API keys. A ClientManager compromise
+does not become a network compromise.
+
+Three details the diagram encodes deliberately:
+
+- **NAS binds loopback only.** Nothing on the network can reach it. Development goes
+  through an SSH tunnel; production will go through Nginx on the same host.
+- **Two separate networks.** Database traffic uses the private `10.10.10.x` link;
+  the switch is reached over the management LAN. PostgreSQL is bound to the private
+  interface only and refuses connections on `192.168.95.x`.
+- **ClientManager stores nothing.** The `netops` app has no models and no migrations.
+  Every VLAN shown in the UI is fetched from the NAS API at request time, so there is
+  one source of truth.
+
+## What a VLAN lookup actually does
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Eng as Support engineer
+    participant CM as ClientManager netops
+    participant API as NAS API
+    participant SCHED as NAS scheduler
+    participant DB as PostgreSQL
+    participant SW as Catalyst 3650
+
+    Note over SCHED,SW: Discovery runs on a schedule, not on demand
+    SCHED->>SW: every 15 min — SSH, show vlan brief
+    SW-->>SCHED: 69 VLANs
+    SCHED->>DB: reconcile — create / update / mark missing
+
+    Note over Eng,DB: The engineer's question is answered from the synced copy
+    Eng->>CM: Is VLAN 1234 free?
+    CM->>API: GET /api/v1/vlans/lookup/1234
+    API->>DB: rows for tag 1234, across all switches
+    DB-->>API: no active record
+    API-->>CM: available + data_as_of + is_stale
+    CM-->>Eng: Available, or a staleness warning
+```
+
+The lookup **never touches a switch**. It answers from the synchronised copy, which is why
+the response carries `data_as_of` and `is_stale`: the switches remain authoritative, and the
+UI has to say when the cached answer should not be trusted.
 
 ## Layers
 
@@ -133,7 +193,7 @@ Structured JSON logs via structlog, one object per line. Every record carries `t
 `path` and — once authenticated — `api_key_id`. stdlib loggers (uvicorn, SQLAlchemy, Alembic)
 are routed through the same formatter so the stream stays uniformly parseable by Loki.
 
-An inbound `X-Request-ID` is honoured and echoed back, so a correlation id set by the CRM
+An inbound `X-Request-ID` is honoured and echoed back, so a correlation id set by ClientManager
 traces a request across both services. Inbound values are length-capped and character-filtered
 before use — they land in log records, so they are treated as untrusted input.
 

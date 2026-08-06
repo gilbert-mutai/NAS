@@ -16,7 +16,7 @@ NOW = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
 def build_api_key(**overrides: object) -> ApiKey:
     values: dict[str, object] = {
         "id": 1,
-        "name": "crm",
+        "name": "clientmanager",
         "prefix": "1a2b3c4d",
         "key_hash": "0" * 64,
         "scopes": frozenset({"switches:read", "vlans:read"}),

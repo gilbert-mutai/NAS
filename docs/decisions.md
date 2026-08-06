@@ -19,7 +19,7 @@ table-width differences. Screen-scraping a production switch is the wrong founda
 whose entire purpose is to be an authoritative source of VLAN data. Netmiko covers the other
 vendors later behind the same driver interface.
 
-Secondary benefits: one CI toolchain, one deployment pattern (venv + systemd, exactly how the CRM
+Secondary benefits: one CI toolchain, one deployment pattern (venv + systemd, exactly how ClientManager
 already deploys), one language for the team to maintain.
 
 Every element of the brief maps to a true equivalent: Fastify→FastAPI, Zod→Pydantic v2,
@@ -31,17 +31,17 @@ well-understood pattern and a small cost against structured device output.
 
 ---
 
-## 2. Separate repository, developed in the CRM's working directory
+## 2. Separate repository, developed in ClientManager's working directory
 
-**Decision.** `nas/` is its own git repo, located inside the CRM checkout, with `/nas/` in the
-CRM's `.gitignore`.
+**Decision.** `nas/` is its own git repo, located inside ClientManager checkout, with `/nas/` in the
+ClientManager's `.gitignore`.
 
 **Why.** The services share no code — only an HTTP contract — and have different languages,
-dependencies, deploy targets and release cadences. Vendoring NAS into the CRM repo would mean two
+dependencies, deploy targets and release cadences. Vendoring NAS into ClientManager repo would mean two
 CI toolchains and two deploy paths in one history, for no benefit. Keeping the directory in place
 lets both be worked on in one session.
 
-**Risk, and its mitigation.** Someone could `git add nas/` in the CRM. The `.gitignore` entry
+**Risk, and its mitigation.** Someone could `git add nas/` in ClientManager. The `.gitignore` entry
 prevents it, and carries a comment explaining why.
 
 ---
@@ -60,7 +60,7 @@ yields ciphertext that is still worth attacking. Keeping secrets out of the data
 means **a database dump grants no device access at all** — a categorical improvement rather than
 an incremental one.
 
-It also directly improves on the CRM's existing
+It also directly improves on ClientManager's existing
 [`pbx_backups.CXFTPServer`](../../pbx_backups/models.py), which stores `ssh_password` as a
 plaintext column.
 
@@ -181,7 +181,7 @@ prevents overlapping runs.
 
 **Why.** Celery + Redis is the closest analogue to the brief's BullMQ, but it means running and
 monitoring Redis for one periodic job. That is real operational weight against no current
-benefit. The CLI entrypoint also matches how the CRM already schedules its sync jobs. The job
+benefit. The CLI entrypoint also matches how ClientManager already schedules its sync jobs. The job
 layer sits behind an interface, so the swap stays cheap if queue semantics are genuinely needed.
 
 ---
@@ -278,7 +278,7 @@ automatically if the connection dies, so a crashed process cannot wedge syncing.
 `mark_used` UPDATEs the `api_keys` row, taking a row lock. Committing it with the rest of the
 request held that lock for the request's entire lifetime — and since every caller sharing a key
 touches the same row, **all requests using that key serialised behind the slowest one**. A long
-`POST /sync` stalled every other CRM call. It now commits immediately (microseconds of lock) and is
+`POST /sync` stalled every other ClientManager call. It now commits immediately (microseconds of lock) and is
 only rewritten when the stored timestamp is older than five minutes, so reads do not each cost an
 UPDATE. The structured access log remains the precise record of key usage.
 

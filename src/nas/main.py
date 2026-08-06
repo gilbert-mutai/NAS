@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 DESCRIPTION = """
 Backend service for network automation. Owns all access to network devices:
 authenticates to switches, discovers state, and serves it over a versioned REST
-API. Consumers (such as the Angani CRM) never connect to a switch directly and
+API. Consumers (such as Angani ClientManager) never connect to a switch directly and
 never hold switch credentials.
 
 **Authentication** — every `/api/v1` endpoint requires an `X-API-Key` header.

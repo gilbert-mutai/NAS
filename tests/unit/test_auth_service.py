@@ -30,7 +30,7 @@ def build_key(
     generated = generate_api_key()
     key = ApiKey(
         id=7,
-        name="crm",
+        name="clientmanager",
         prefix=generated.prefix,
         key_hash=generated.key_hash,
         scopes=scopes if scopes is not None else frozenset({Scope.SWITCHES_READ.value}),
@@ -142,7 +142,7 @@ class TestUsageThrottling:
 
     ``mark_used`` UPDATEs the api_keys row, taking a row lock. When that lock was
     held for the request's whole lifetime, every caller sharing a key serialised
-    behind the slowest request — a long POST /sync stalled all other CRM calls.
+    behind the slowest request — a long POST /sync stalled all other ClientManager calls.
     The repository now commits immediately, and the service throttles the write so
     reads do not each cost an UPDATE.
     """

@@ -84,7 +84,7 @@ class SqlAlchemyApiKeyRepository:
         # of the request, that lock would be held for the request's entire
         # lifetime — and since every caller sharing a key touches the same row,
         # all requests using that key would serialise behind the slowest one. A
-        # long POST /sync would stall every other CRM call. Committing here holds
+        # long POST /sync would stall every other ClientManager call. Committing here holds
         # the lock for microseconds instead.
         #
         # Safe because authentication runs before any endpoint work, so there is
