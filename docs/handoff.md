@@ -14,8 +14,19 @@ ClientManager rename, the architecture diagrams and the docs pass are done.
 | NAS repo | `nas/` — separate git repo inside the ClientManager working dir, gitignored from it |
 | NAS remote | `https://github.com/gilbert-mutai/NAS.git` · `master` / `nas-gilbert` |
 | ClientManager | `master` / `gilbert` |
-| Quality gate | ruff · `mypy --strict` (59 files) · **508 NAS tests** · **145 ClientManager tests** · no migration drift |
+| Quality gate | ruff · `mypy --strict` (59 files) · **508 NAS tests** · **154 ClientManager tests** · no migration drift |
 | Staging | live, syncing a production Catalyst 3650 every 15 min |
+| ClientManager UI | behind `NETOPS_ENABLED`, **default off** — see below |
+
+### The netops screens are gated
+
+`NETOPS_ENABLED` (ClientManager `.env`) defaults to **False**, so production hides the
+feature until it is deliberately switched on. Off means no Access Center tiles *and*
+404 on every `/network/` URL — not merely unlinked. Set `NETOPS_ENABLED=True` for local
+work and restart `runserver`. Details in `netops/README.md`.
+
+When Milestone 4 finishes and ClientManager's side is deployed, turning this on is the
+release switch.
 
 Shipped: Milestones 1–3, the Cisco drivers, the staging deployment, and the rename.
 See [roadmap.md](roadmap.md).
