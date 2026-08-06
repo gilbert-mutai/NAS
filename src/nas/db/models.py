@@ -302,8 +302,72 @@ class SyncRunSwitchRow(Base, TimestampMixin):
         return f"<SyncRunSwitchRow run={self.sync_run_id} switch={self.switch_name!r}>"
 
 
+class AuditLogRow(Base):
+    """An immutable record of a security-relevant event.
+
+    Deliberately **not** a ``TimestampMixin`` user. The mixin brings ``updated_at``
+    and an ``onupdate`` hook, and a row that can be updated is not an audit record.
+    ``occurred_at`` is the only time this table needs.
+
+    Attribution is stored twice on purpose. ``api_key_id`` gives a live foreign key
+    for joins, and ``api_key_name`` is a snapshot that survives the key being
+    revoked and deleted — the same reasoning as ``sync_run_switches.switch_name``.
+    Deleting a key must not erase the history of what it did.
+
+    ``actor`` is the human identity forwarded by the caller (ClientManager sends the
+    logged-in user). It is **caller-asserted, not verified** — NAS authenticates the
+    API key, not the person behind it. Trustworthy exactly as far as the calling
+    application is, which is why the key name is kept alongside it rather than
+    replaced by it.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # AuditAction / AuditOutcome. Plain strings with no CHECK constraint, matching
+    # switches.vendor: adding an action needs an enum member, not a migration.
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    api_key_id: Mapped[int | None] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
+    )
+    api_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # 320 = the maximum length of an email address (64 local + @ + 255 domain).
+    actor: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+    # 45 covers an IPv4-mapped IPv6 address, the longest textual form.
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
+    # Ties this entry to the request's log lines and, for a sync, to sync_runs.
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # What was acted on, e.g. ("sync_run", "42"). target_id is text so it can hold
+    # a name as readily as an integer id.
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Action-specific context. Never secrets — see AuditService for what is allowed.
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        # "What happened recently" is the only hot query; the rest is forensic and
+        # can scan. Ascending order serves ORDER BY ... DESC fine.
+        Index("ix_audit_log_occurred_at", "occurred_at"),
+        Index("ix_audit_log_action", "action"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<AuditLogRow id={self.id} action={self.action!r} outcome={self.outcome!r}>"
+
+
 __all__ = [
     "ApiKeyRow",
+    "AuditLogRow",
     "SwitchRow",
     "SyncRunRow",
     "SyncRunSwitchRow",

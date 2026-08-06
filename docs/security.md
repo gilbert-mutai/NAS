@@ -132,10 +132,66 @@ validation errors not echoing input.
 | Gap | Why it can wait |
 |---|---|
 | No rate limiting | IP allowlist plus scoped keys bound the caller set to hosts you control |
-| No `audit_log` table | Phase 1 has no mutating endpoints; the structured access log covers read activity |
 | No TLS terminated by NAS | Nginx terminates TLS in staging/production; local runs on loopback |
 | No dependency vulnerability scanning in CI | Added with the CI hardening pass; dependencies are pinned to compatible ranges |
 | Credentials unencrypted at rest on disk | `0600` plus host-level controls; full-disk encryption is the right layer for this |
+
+## Audit trail — built in Milestone 4
+
+The `audit_log` table was designed in Milestone 1 and deferred. It said at the time that "Phase 1
+has no mutating endpoints", which had stopped being true: `POST /sync` and the `sync:write` scope
+exist, and the ClientManager "Sync Now" button reaches a production switch. That claim is
+withdrawn.
+
+**What is recorded**
+
+| Action | When |
+|---|---|
+| `sync.trigger` / `success` | A run completed; the entry points at the `sync_runs` row |
+| `sync.trigger` / `error` | Rejected with 409 (a run was already going), or the run raised |
+| `auth.denied` / `denied` | An authenticated key reached for a scope it does not hold |
+
+**What is deliberately not recorded**
+
+- **Routine reads.** The structured access log already has every request. A row per VLAN lookup
+  would bury a sync against production hardware under ordinary traffic.
+- **Authentication failures.** The presented key is unknown by definition, so there is nothing to
+  attribute the row to — and an unauthenticated caller could otherwise fill the table by looping.
+  Those stay in the access log.
+
+**Attribution, and its limit**
+
+`actor` is forwarded by the caller — ClientManager sends the logged-in user's email on
+`POST /sync` via `X-Actor`. **NAS does not verify it.** NAS authenticates the API key, not the
+person behind it, so the value is exactly as trustworthy as the calling application. It is stored
+beside `api_key_name`, never instead of it: the key is what NAS proved, the actor is what it was
+told. Read them together, and treat `actor` as evidence rather than proof.
+
+The header is untrusted input. It is sanitised inside `AuditService` — not at the edge, so no
+call path can bypass it — stripping anything outside `[\w.@+\- ]` and truncating to 320
+characters. A newline in a field that reaches log lines is a log-forging primitive, and nothing
+in NAS depends on an intermediary having rejected it first.
+
+**Integrity**
+
+- No update or delete path exists in the application; the repository Protocol has `record` and
+  `list` and nothing else. Retention is a DBA task, so "clear the evidence" is not a one-line
+  code change.
+- The table has no `updated_at` and must not gain one.
+- Deleting an API key nulls the FK but keeps the name snapshot, so revocation cannot erase
+  history.
+- Reading the trail needs the `audit:read` scope, which is **not** in the read-only bundle issued
+  to ClientManager. A key that looks up VLANs cannot enumerate who triggered what.
+
+**Availability trade-off, stated plainly**
+
+A failed audit write does not fail the operation. By the time the entry is written the switches
+have been polled; raising would report failure for work that succeeded and the caller's retry
+would poll them again. The failure is logged at `error` with the entire entry inline, so the
+event survives in the structured log and only its queryable form is lost. This is a deliberate
+choice of degradation over silence *and* over false failure — if a queryable trail must be
+guaranteed, that needs a different design (write-ahead, or refusing the request), which Phase 1
+does not have.
 
 **Recommendations before staging goes live**
 

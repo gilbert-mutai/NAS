@@ -216,8 +216,9 @@ expose no switch, customer or credential data.
 means revisiting every one; establishing it first makes every later route conform for free. The
 same argument applies to the request-id middleware and the auth dependency.
 
-Rate limiting and the `audit_log` table remain in Milestone 4 — they are additive, and the IP
-allowlist plus scoped keys already bound the caller set meanwhile.
+Rate limiting and the `audit_log` table remained in Milestone 4 — they are additive, and the IP
+allowlist plus scoped keys already bound the caller set meanwhile. The audit log has since been
+built; see the Milestone 4 section.
 
 ---
 
@@ -391,3 +392,72 @@ certificates and NAS reaches them over a private management network, so
 verification would fail on essentially every device while the network boundary does
 the real work. It is a genuine weakening of transport security, so it is a
 documented setting rather than a hardcoded `verify=False`.
+
+
+## Milestone 4 (2026-08-06)
+
+### The audit log stores who NAS *proved* and who it was *told*, in separate columns
+
+NAS authenticates an API key. It has no way to authenticate the human behind a
+request — ClientManager does that, then calls NAS with its own key. So an audit row
+carries both `api_key_name` (proved) and `actor` (asserted by the caller, forwarded
+in `X-Actor`).
+
+**Why not just the actor.** It would present an unverified claim as fact. Anything
+holding the ClientManager key can send any actor string; a trail that showed only
+`gilbert@angani.co` would read as proof of who acted when it is really ClientManager's
+word for it.
+
+**Why not just the key.** Then the trail says "clientmanager triggered a sync" and
+cannot answer "who". The sync button is staff-only precisely because it reaches
+production hardware, so accountability is the point of recording it at all.
+
+Keeping both makes the limit visible in the data rather than buried in a document.
+`AuditEntry.attribution` renders it as "actor via key" for exactly that reason.
+
+### Audit entries commit on their own session
+
+`AuditService` takes a session *factory*, not a session, and commits independently of
+the request transaction.
+
+**Why.** A `POST /sync` rejected with 409 raises, so FastAPI rolls the request
+transaction back — and an entry written on that session would vanish with it. A
+rejected attempt is exactly what the trail should hold: a burst of them is somebody
+clicking a button that appears not to work. Same reasoning as
+`ApiKeyRepository.mark_used`, for a different reason.
+
+**Cost.** One extra connection checkout per audited action, and the entry is not
+atomic with the operation. Acceptable because the operation it describes has already
+had its effect on the devices by then.
+
+### A failed audit write degrades rather than failing the request
+
+The write is best-effort. A failure logs at `error` with the whole entry inline and
+returns `None`.
+
+**Why not fail the request.** By the time the entry is written the switches have been
+polled. A 500 would report failure for work that succeeded, and the caller's retry
+would poll them again — turning an audit outage into a second sync against production
+hardware.
+
+**Why not fail silently.** An audit log that quietly drops entries is worthless. The
+event still lands in the structured log, which is shipped to journald; only its
+queryable form is lost.
+
+This is a real trade-off, not a free choice: if a guaranteed queryable trail is ever
+required, it needs a different design — write-ahead, or refusing the request — and
+Phase 1 does not have one.
+
+### Reads are not audited
+
+Only actions that reach a device or change state, plus scope denials. The structured
+access log already records every request, and a row per VLAN lookup would bury a sync
+against production hardware under routine traffic. Authentication failures are also
+excluded: the presented key is unknown, so there is nothing to attribute the row to,
+and an anonymous caller could otherwise fill the table by looping.
+
+### `audit:read` is outside the read-only bundle
+
+The trail records who triggered what. A key issued to look up VLANs has no business
+enumerating that, so `READ_ONLY_SCOPES` — what ClientManager gets — deliberately
+excludes it. Reading the trail needs a key minted for an operator.

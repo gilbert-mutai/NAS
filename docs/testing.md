@@ -1,10 +1,13 @@
 # Testing strategy
 
-**208 tests. 186 need nothing but Python; 22 need PostgreSQL.**
+**588 tests. 504 need nothing but Python; 84 need PostgreSQL.**
+
+(Counts below are per-milestone snapshots kept for context; the figures above are current.)
 
 ```bash
-pytest                  # 186 unit + API tests, ~2s, no database
-pytest -m integration   # 22 repository tests against real PostgreSQL
+pytest                  # all 588; the 84 integration ones need NAS_TEST_DATABASE_URL
+pytest -m "not integration"   # 504, no database, a few seconds
+pytest -m integration   # 84 repository/service tests against real PostgreSQL
 ruff check . && mypy    # lint + strict type checking
 ```
 
@@ -12,9 +15,9 @@ ruff check . && mypy    # lint + strict type checking
 
 | Layer | Count | Needs | Answers |
 |---|---|---|---|
-| `tests/unit/` | 130 | nothing | Is the logic correct in isolation? |
-| `tests/api/` | 56 | nothing | Does a real HTTP request behave correctly end-to-end? |
-| `tests/integration/` | 22 | PostgreSQL | Does the SQL, and the migration that creates it, actually work? |
+| `tests/unit/` | 366 | nothing | Is the logic correct in isolation? |
+| `tests/api/` | 138 | nothing | Does a real HTTP request behave correctly end-to-end? |
+| `tests/integration/` | 84 | PostgreSQL | Does the SQL, and the migration that creates it, actually work? |
 
 ### Unit tests
 
@@ -254,3 +257,50 @@ What the real output exercises that hand-written fixtures did not:
 - All four IOS-created defaults (1002–1005) present and needing exclusion
 
 When another platform reaches real hardware, record its output the same way.
+
+---
+
+## Milestone 4 — audit trail
+
+588 tests. The audit work added 66: 26 API, 24 unit, 16 integration.
+
+| Test | Guards |
+|---|---|
+| `test_audit_repository.py::TestServiceCommitsIndependently` | An audit entry survives a request whose transaction rolls back — the property that makes the rejected-sync entry possible at all |
+| `test_audit.py::TestRejectedSyncIsAudited` | The 409 and an unexpected crash are both recorded, not just the happy path |
+| `test_audit.py::TestScopeDenialIsAudited::test_no_sync_ran` | The denial happens *before* the service is reached, so the entry is not describing a sync that already ran |
+| `test_audit_actor.py::TestHostileInput` | Newlines, ANSI escapes and NUL bytes are stripped from a caller-supplied identity |
+| `test_audit_repository.py::TestSurvivingAKeyDeletion` | Deleting an API key nulls the FK but keeps the name — revocation cannot erase history |
+| `test_actor_forwarding.py` (ClientManager) | The acting user is forwarded on the sync trigger and on nothing else |
+
+### Why the transaction test needs a real database
+
+`AuditService` holds a session *factory* and commits on its own session, so an entry
+written during a request that later raises is not rolled back with it. No in-memory
+fake can demonstrate that — the fake has no transaction. Removing the service's
+`commit()` turns two integration tests red and leaves every API test green, which is
+exactly the right split.
+
+### What was learned mutation-testing this suite
+
+Each of the guards above was checked by breaking the thing it protects and confirming
+the test went red. Two findings worth keeping:
+
+- **One test did not earn its docstring.** "Identical timestamps paginate without
+  loss" passed with *and* without the `id DESC` tiebreak it was written to protect:
+  at this table size PostgreSQL walks the index backwards and returns equal keys in
+  reverse insertion order anyway. The tiebreak stays (SQL does not promise that
+  ordering), but the test now says plainly that it would not catch its removal. An
+  untested guard that reads like a tested one is worse than no test.
+- **A scripted mutation that silently fails to apply looks like a passing test.**
+  The first attempt at the above used a string replacement that no longer matched
+  after `ruff format`, so "the test still passes" was measuring nothing. Assert the
+  replacement applied before trusting the result.
+
+### The actor is not proof
+
+`actor` is asserted by the caller. The tests treat it as untrusted input — sent as a
+real HTTP header carrying a newline, an ANSI escape and `<script>` — and assert the
+stored value is clean. Sanitisation lives inside `AuditService` rather than at the
+edge, so `FakeAuditService` applies it too; otherwise an API test could assert a
+hostile string was stored verbatim and pass while production stored the cleaned one.

@@ -20,10 +20,12 @@ from nas.core.security import GeneratedApiKey, Scope, generate_api_key
 from nas.domain.entities import ApiKey
 from nas.main import create_app
 from tests.fakes import (
+    FakeAuditService,
     FakeCredentialProvider,
     FakeDatabase,
     FakeSyncService,
     InMemoryApiKeyRepository,
+    InMemoryAuditRepository,
     InMemorySwitchRepository,
     InMemorySyncRunRepository,
     InMemoryVlanRepository,
@@ -79,6 +81,23 @@ def sync_service() -> FakeSyncService:
 
 
 @pytest.fixture
+def audit_repository() -> InMemoryAuditRepository:
+    return InMemoryAuditRepository()
+
+
+@pytest.fixture
+def audit_service() -> FakeAuditService:
+    """Captures audit entries so a test can assert what was recorded.
+
+    Overridden for every API test, not just the audit ones: require_scopes writes an
+    entry on a scope denial, so the real service would otherwise be resolved (and
+    reach for a session factory FakeDatabase does not have) on any authenticated
+    request.
+    """
+    return FakeAuditService()
+
+
+@pytest.fixture
 def credential_provider() -> FakeCredentialProvider:
     return FakeCredentialProvider({"juniper-core"})
 
@@ -115,6 +134,8 @@ def app_factory(
     sync_run_repository: InMemorySyncRunRepository,
     sync_service: FakeSyncService,
     credential_provider: FakeCredentialProvider,
+    audit_repository: InMemoryAuditRepository,
+    audit_service: FakeAuditService,
 ) -> Iterator[object]:
     """Returns a callable building an app with the given settings.
 
@@ -141,6 +162,8 @@ def app_factory(
         application.dependency_overrides[deps.get_credential_provider] = lambda: credential_provider
         application.dependency_overrides[deps.get_vlan_repository] = lambda: vlan_repository
         application.dependency_overrides[deps.get_sync_run_repository] = lambda: sync_run_repository
+        application.dependency_overrides[deps.get_audit_repository] = lambda: audit_repository
+        application.dependency_overrides[deps.get_audit_service] = lambda: audit_service
         created.append(application)
         return application
 

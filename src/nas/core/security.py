@@ -40,6 +40,10 @@ class Scope(StrEnum):
     SWITCHES_READ = "switches:read"
     SYNC_WRITE = "sync:write"
     SYNC_READ = "sync:read"
+    AUDIT_READ = "audit:read"
+    """Read the audit trail. Deliberately outside READ_ONLY_SCOPES: the trail
+    records who triggered what, and a key that only needs to look up VLANs has no
+    business reading it. Grant it explicitly, to an operator's key."""
 
     @classmethod
     def values(cls) -> frozenset[str]:

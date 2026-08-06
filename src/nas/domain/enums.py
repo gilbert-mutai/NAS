@@ -149,3 +149,41 @@ class SwitchSyncOutcome(StrEnum):
     FAILED = "failed"
     SKIPPED = "skipped"
     """Inactive, unsupported vendor, or unresolvable credential."""
+
+
+class AuditAction(StrEnum):
+    """What an audit entry records.
+
+    Dotted ``subject.verb`` names so a partial match selects a family:
+    ``action LIKE 'switch.%'`` finds every inventory change.
+
+    Read endpoints are deliberately absent. The structured access log already
+    records every request, and adding a row per VLAN lookup would bury the events
+    that actually matter — a sync against production hardware, an inventory
+    change, a rejected call — under routine traffic.
+    """
+
+    SYNC_TRIGGER = "sync.trigger"
+    """A synchronisation was requested. The only Phase 1 action that reaches a
+    switch, which is why it is the one that most needs attributing."""
+
+    SWITCH_CREATE = "switch.create"
+    SWITCH_UPDATE = "switch.update"
+    SWITCH_DELETE = "switch.delete"
+
+    APIKEY_CREATE = "apikey.create"
+    APIKEY_REVOKE = "apikey.revoke"
+
+    AUTH_DENIED = "auth.denied"
+    """A call rejected for insufficient scope. Recorded because a key reaching for
+    a privilege it was not granted is worth seeing, whether it is a
+    misconfiguration or a probe."""
+
+
+class AuditOutcome(StrEnum):
+    SUCCESS = "success"
+    DENIED = "denied"
+    """Authenticated but not permitted."""
+
+    ERROR = "error"
+    """Permitted and attempted, but it failed."""

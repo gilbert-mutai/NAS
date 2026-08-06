@@ -1,9 +1,10 @@
 # Handoff — resume here
 
-Last worked: **2026-08-05**. Phase 1 discovery is **live on real hardware**. The
-ClientManager rename, the architecture diagrams and the docs pass are done.
+Last worked: **2026-08-06**. Phase 1 discovery is **live on real hardware**. The
+ClientManager rename and docs pass are done, and the first Milestone 4 item — the audit
+log — has shipped.
 
-**Next up: Milestone 4 — production hardening.**
+**Next up: rate limiting**, then Nginx. See the Milestone 4 list below.
 
 ---
 
@@ -14,7 +15,7 @@ ClientManager rename, the architecture diagrams and the docs pass are done.
 | NAS repo | `nas/` — separate git repo inside the ClientManager working dir, gitignored from it |
 | NAS remote | `https://github.com/gilbert-mutai/NAS.git` · `master` / `nas-gilbert` |
 | ClientManager | `master` / `gilbert` |
-| Quality gate | ruff · `mypy --strict` (59 files) · **508 NAS tests** · **154 ClientManager tests** · no migration drift |
+| Quality gate | ruff · `mypy --strict` (63 files) · **588 NAS tests** · **161 ClientManager tests** · no migration drift |
 | Staging | live, syncing a production Catalyst 3650 every 15 min |
 | ClientManager UI | behind `NETOPS_ENABLED`, **default off** — see below |
 
@@ -28,8 +29,8 @@ work and restart `runserver`. Details in `netops/README.md`.
 When Milestone 4 finishes and ClientManager's side is deployed, turning this on is the
 release switch.
 
-Shipped: Milestones 1–3, the Cisco drivers, the staging deployment, and the rename.
-See [roadmap.md](roadmap.md).
+Shipped: Milestones 1–3, the Cisco drivers, the staging deployment, the rename, and the
+audit log. See [roadmap.md](roadmap.md).
 
 ## The deployment
 
@@ -79,7 +80,7 @@ cd nas
 docker compose up -d                      # PostgreSQL on 127.0.0.1:5434
 export PATH="$PWD/.venv/bin:$PATH"
 export NAS_TEST_DATABASE_URL=postgresql+asyncpg://nas:nas@localhost:5434/nas_test
-pytest                                    # 508
+pytest                                    # 588
 ```
 
 Port 5434 is deliberate: 5432 is ClientManager's PostgreSQL, 5433 belongs to an unrelated
@@ -98,19 +99,46 @@ Hostname markers inject driver failures: `-unreachable`, `-badauth`, `-garbled`.
 
 ---
 
-## Next: Milestone 4 — production hardening
+## Milestone 4 — production hardening
 
-1. **Audit log.** The `audit_log` table was designed in Milestone 1 and never built.
-   Every sync trigger and every authenticated call should land in it.
-2. **Rate limiting** on `/api/v1`.
-3. **Nginx** in front of uvicorn on App-Server, then set
+### Done: audit log (2026-08-06)
+
+`audit_log` records `sync.trigger` (success, 409, and unexpected failure) and
+`auth.denied`. Attribution is **two columns on purpose** — `api_key_name` is what NAS
+authenticated, `actor` is what the caller asserted via `X-Actor` and is not verified.
+ClientManager forwards the logged-in user's email on "Sync Now".
+
+Reads are not audited (the access log already has them) and neither are authentication
+failures (nothing to attribute, and trivially floodable). Readable at
+`GET /api/v1/audit` under a new `audit:read` scope, which is **not** in the read-only
+bundle ClientManager holds.
+
+Two behaviours to know before changing it:
+
+- `AuditService` commits on **its own session**, so a rejected sync's entry survives
+  the request rollback. Remove that and the 409 stops being recorded.
+- A failed audit write **does not fail the request** — it logs at `error` with the
+  whole entry inline. By then the switches have been polled, so a 500 would report
+  failure for work that succeeded and the retry would poll them again.
+
+**Deployment note:** the migration adds a table; run `nas db upgrade` on App-Server.
+Nothing else is needed — the actor header is optional and old callers keep working.
+
+### Still to do
+
+1. **Rate limiting** on `/api/v1`.
+2. **Nginx** in front of uvicorn on App-Server, then set
    `NAS_TRUST_PROXY_HEADERS=true` — and not before, or `X-Forwarded-For` becomes
-   spoofable past the IP allowlist.
-4. **Deploy ClientManager's side properly.** It currently reaches NAS through an SSH
+   spoofable past the IP allowlist. Note this also affects `audit_log.source_ip`,
+   which uses the same resolution.
+3. **Deploy ClientManager's side properly.** It currently reaches NAS through an SSH
    tunnel from a laptop. When ClientManager is deployed, add its host to
    `NAS_ALLOWED_IP_RANGES` as a `/32`.
-5. **Revoke the old `crm` API key** in the staging database once nothing uses it:
+4. **Revoke the old `crm` API key** in the staging database once nothing uses it:
    `nas apikey list` then `nas apikey revoke crm`. The active key is `clientmanager`.
+   Note the audit trail keeps a name snapshot, so revoking does not erase history.
+5. **Mint an operator key with `audit:read`** if anyone needs to read the trail
+   through the API rather than psql.
 6. **Security review** of the whole Phase 1 surface.
 
 ## Known gaps, deliberately deferred
@@ -132,14 +160,21 @@ Hostname markers inject driver failures: `-unreachable`, `-badauth`, `-garbled`.
 
 ## Things that have bitten us
 
-Four bugs so far passed both `ruff` and `mypy --strict` and were caught only by running
-the code. Two patterns worth carrying forward:
+Five bugs so far passed both `ruff` and `mypy --strict` and were caught only by running
+the code. Patterns worth carrying forward:
 
 - **Assert identity, not counts.** A leaked loop variable made every reconciliation plan
   entry reference the wrong record; every count was correct.
 - **Use recorded output, not hand-written fixtures.** `parse_version` worked on a
   single-line banner and failed on the wrapped output real devices emit. The real 3650
   output now lives in `tests/fixtures/`.
+- **Never annotate a FastAPI parameter with a closure variable.** Every module here uses
+  `from __future__ import annotations`, so annotations are strings that FastAPI resolves
+  against the *module* namespace. `Depends(some_local)` inside a dependency factory
+  raises an unresolved ForwardRef during schema generation, and FastAPI degrades the
+  parameter into a request body — a 422 on every call to the route. `audited_context`
+  calls `require_scopes` directly instead, and says so in a comment. Annotate only
+  module-level names.
 
 Also: **a local test run is not automatically equivalent to CI.** A local `.env` with
 `DEBUG=True` masked a staticfiles-manifest failure that turned CI red. `settings_ci` now
@@ -147,7 +182,16 @@ pins `DEBUG=False` so the two match.
 
 And: **editing with `sed` after `ruff format` has run** is how two of those bugs were
 introduced — a pattern that no longer matches fails silently and leaves half a rename
-behind. Prefer targeted edits against current file contents.
+behind. Prefer targeted edits against current file contents. When scripting an edit,
+assert the replacement actually applied — a mutation test that silently no-ops looks
+exactly like a passing test.
+
+Finally: **mutation-test a test before trusting it.** The audit suite's
+"identical timestamps paginate correctly" test passes with or without the `id DESC`
+tiebreak it was written to protect — PostgreSQL happens to return equal keys in reverse
+insertion order at this table size. The tiebreak stays because SQL does not promise
+that, but the test's docstring now says plainly that it would not catch the removal.
+An untested guard that reads like a tested one is worse than no test.
 
 ## Reading order for a cold start
 
