@@ -86,6 +86,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106"]  # hardcoded test credentials are fine
+# Device output recorded verbatim from real hardware. Re-wrapping it to satisfy the
+# line limit would change the very thing under test.
+"tests/unit/test_cisco_iosxe_parser.py" = ["S105", "S106", "E501"]
 
 # ── Type checking ─────────────────────────────────────────────────────────────
 [tool.mypy]
