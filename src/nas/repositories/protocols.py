@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from nas.domain.entities import ApiKey, Switch, SyncRun, Vlan
+from nas.domain.entities import ApiKey, AuditEntry, Switch, SyncRun, Vlan
 from nas.domain.enums import (
+    AuditAction,
+    AuditOutcome,
     SwitchSyncOutcome,
     SyncStatus,
     SyncTrigger,
@@ -192,3 +194,30 @@ class SyncRunRepository(Protocol):
         and /sync/status would report a sync in progress indefinitely.
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class AuditFilters:
+    """Query filters for the audit trail. All fields are optional."""
+
+    action: AuditAction | None = None
+    outcome: AuditOutcome | None = None
+    actor: str | None = None
+    since: datetime | None = None
+
+
+class AuditRepository(Protocol):
+    """Append and read. There is deliberately no update and no delete.
+
+    Retention is a database-administration concern — a scheduled job or a partition
+    drop — not something the application should be able to reach for. Giving the
+    service a delete method would make "clear the evidence" a one-line change.
+    """
+
+    async def record(self, entry: AuditEntry) -> AuditEntry:
+        """Append an entry, returning it with its assigned id."""
+        ...
+
+    async def list(
+        self, *, filters: AuditFilters, page_request: PageRequest
+    ) -> Page[AuditEntry]: ...

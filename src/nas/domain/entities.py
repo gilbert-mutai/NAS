@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from nas.domain.enums import (
+    AuditAction,
+    AuditOutcome,
     CredentialStatus,
     InterfaceMode,
     ReachabilityState,
@@ -214,3 +217,51 @@ class SyncRun:
         if succeeded == 0:
             return SyncStatus.FAILED
         return SyncStatus.PARTIAL
+
+
+# An `actor` longer than this is a bug or an attack, not a user. 320 is the maximum
+# length of an email address: 64 for the local part, 1 for @, 255 for the domain.
+MAX_ACTOR_LENGTH = 320
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEntry:
+    """A security-relevant event, recorded so it can be answered for later.
+
+    Frozen like every other entity, but here immutability is the point rather than a
+    convenience: nothing in the service is allowed to amend an audit record.
+
+    ``actor`` is the human the calling application says was responsible.
+    **NAS does not verify it** — it authenticates the API key, not the person. So
+    ``api_key_name`` is kept alongside rather than replaced by it: the key is what
+    NAS proved, the actor is what it was told.
+    """
+
+    action: AuditAction
+    outcome: AuditOutcome
+    occurred_at: datetime
+    id: int | None = None
+    api_key_id: int | None = None
+    api_key_name: str | None = None
+    actor: str | None = None
+    source_ip: str | None = None
+    correlation_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    detail: dict[str, Any] | None = None
+
+    @property
+    def attribution(self) -> str:
+        """A one-line description of who did this, for a log line or a report.
+
+        Names the key as well as the actor, because the distinction between "the key
+        NAS authenticated" and "the person ClientManager claims was behind it"
+        matters when reading the trail back.
+        """
+        if self.actor and self.api_key_name:
+            return f"{self.actor} via {self.api_key_name}"
+        if self.actor:
+            return self.actor
+        if self.api_key_name:
+            return self.api_key_name
+        return "unattributed"

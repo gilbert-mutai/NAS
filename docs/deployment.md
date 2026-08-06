@@ -375,6 +375,39 @@ curl -sf https://nas.internal/ready
 Run `nas db upgrade` before the restart. Migrations are additive in Phase 1, so a brief version
 skew during the restart is harmless.
 
+### Upgrading to the audit-log release (`0003_audit_log`)
+
+`nas db upgrade` creates the `audit_log` table. That is the whole deployment step — nothing else
+is required, and nothing breaks if you forget the rest:
+
+- **The `X-Actor` header is optional.** A ClientManager that does not send it produces audit
+  entries with `actor: null`, attributed to the API key alone. No call fails.
+- **The existing `clientmanager` key keeps working unchanged.** It does not gain `audit:read`,
+  which is deliberate — that scope lets a caller enumerate who triggered what, and ClientManager
+  does not need it.
+
+To read the trail through the API, mint a separate operator key:
+
+```bash
+sudo -u nas sh -c 'cd /opt/nas/app && .venv/bin/nas apikey create --name audit-operator \
+     --scopes audit:read'
+```
+
+Or read it directly, which needs no key:
+
+```sql
+SELECT occurred_at, action, outcome, actor, api_key_name, target_id
+FROM audit_log ORDER BY occurred_at DESC LIMIT 20;
+```
+
+**If the trail looks empty after a sync**, check the service log for `audit_write_failed`. An
+audit write that fails does **not** fail the sync — by then the switches have been polled, so
+raising would report failure for work that succeeded — and the entry is logged inline instead:
+
+```bash
+journalctl -u nas.service | grep audit_write_failed
+```
+
 ## Rollback
 
 ```bash

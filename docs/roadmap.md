@@ -104,7 +104,10 @@ so the planned `transport` column and telnet driver were never built.
 
 ## Milestone 4 — Production hardening
 
-- `audit_log` table and write path
+- ~~`audit_log` table and write path~~ — **done (2026-08-06)**. Records `sync.trigger` and
+  `auth.denied`, attributed to both the API key and the caller-asserted actor. Readable at
+  `GET /api/v1/audit` under a new `audit:read` scope. See [security.md](security.md) for what is
+  deliberately *not* recorded and why a failed audit write does not fail the operation.
 - Rate limiting
 - Integration suite against mock switches
 - Staging deployment: Nginx + systemd, runbook

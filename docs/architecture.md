@@ -112,10 +112,14 @@ This is not decoration. Two concrete payoffs:
 
 1. **The whole API surface is tested without a database.** `tests/api/` overrides the
    repository dependencies with in-memory fakes and exercises real routing, real middleware,
-   real auth and real error handlers. 156 tests, no PostgreSQL, ~2 seconds.
-2. **Business rules are testable without a switch.** Milestone 2's reconciliation logic
-   (created / updated / marked-missing) will be pure functions over domain objects, testable
+   real auth and real error handlers. 138 API tests, no PostgreSQL.
+2. **Business rules are testable without a switch.** The reconciliation logic
+   (created / updated / marked-missing) is pure functions over domain objects, tested
    deterministically in CI where no device is reachable.
+
+The one place this is *not* enough: `AuditService` commits on its own session so an audit entry
+survives a request that rolls back, and no in-memory fake has a transaction to demonstrate that.
+It is covered in `tests/integration/` instead.
 
 ### Where each layer's code lives
 
@@ -127,9 +131,10 @@ This is not decoration. Two concrete payoffs:
 | API | `api/health.py` | Liveness, readiness, health |
 | Service | `services/switches.py` | Switch inventory use-cases, credential status derivation |
 | Service | `services/auth.py` | Key authentication, scope authorisation |
+| Service | `services/audit.py` | Appending the audit trail; actor sanitisation |
 | Repository | `repositories/protocols.py` | Interfaces + filter/input DTOs |
-| Repository | `repositories/switches.py`, `api_keys.py` | SQLAlchemy implementations |
-| Domain | `domain/entities.py` | `Switch`, `ApiKey` — immutable, framework-free |
+| Repository | `repositories/switches.py`, `api_keys.py`, `audit.py` | SQLAlchemy implementations |
+| Domain | `domain/entities.py` | `Switch`, `ApiKey`, `AuditEntry` — immutable, framework-free |
 | Domain | `domain/enums.py` | `Vendor`, `CredentialStatus`, `ReachabilityState` |
 | Domain | `domain/pagination.py` | `PageRequest`, `Page[T]` |
 | Core | `core/config.py` | Settings, boot-time hardening checks |

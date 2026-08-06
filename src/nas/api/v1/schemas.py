@@ -13,11 +13,14 @@ Response conventions:
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nas.domain.entities import SyncRun, SyncRunSwitch, Vlan, VlanInterface
+from nas.domain.entities import AuditEntry, SyncRun, SyncRunSwitch, Vlan, VlanInterface
 from nas.domain.enums import (
+    AuditAction,
+    AuditOutcome,
     CredentialStatus,
     InterfaceMode,
     ReachabilityState,
@@ -399,3 +402,52 @@ class SyncTriggerRequest(BaseModel):
         description="Restrict the run to these switches. Omit to sync all of them.",
         examples=[[1, 2]],
     )
+
+
+class AuditEntryResponse(BaseModel):
+    """One recorded event.
+
+    Note the two attribution fields. `api_key_name` is the caller NAS
+    authenticated; `actor` is the human that caller *said* was responsible and is
+    **not verified by NAS**. Read them together — "gilbert@angani.co via
+    clientmanager" is a claim by ClientManager, trustworthy exactly as far as
+    ClientManager is.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    action: AuditAction
+    outcome: AuditOutcome
+    occurred_at: datetime
+    api_key_id: int | None
+    api_key_name: str | None = Field(description="The caller NAS authenticated.")
+    actor: str | None = Field(description="Caller-asserted human identity. Not verified by NAS.")
+    source_ip: str | None
+    correlation_id: str | None = Field(
+        default=None, description="Matches X-Request-ID and the run's correlation id."
+    )
+    target_type: str | None
+    target_id: str | None
+    detail: dict[str, Any] | None
+
+    @classmethod
+    def from_entity(cls, entity: AuditEntry) -> AuditEntryResponse:
+        # id is assigned by the database on insert, so a persisted entry always has
+        # one. Reading an entry without an id means it was never stored.
+        if entity.id is None:
+            raise ValueError("Cannot serialise an unsaved audit entry.")
+        return cls(
+            id=entity.id,
+            action=entity.action,
+            outcome=entity.outcome,
+            occurred_at=entity.occurred_at,
+            api_key_id=entity.api_key_id,
+            api_key_name=entity.api_key_name,
+            actor=entity.actor,
+            source_ip=entity.source_ip,
+            correlation_id=entity.correlation_id,
+            target_type=entity.target_type,
+            target_id=entity.target_id,
+            detail=entity.detail,
+        )

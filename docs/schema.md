@@ -87,8 +87,8 @@ comparison. A stolen database yields no usable key.
 
 **`last_used_at` is a convenience column, not an audit record.** It is written in the request
 transaction, so a request that ends in an error rolls the timestamp back with everything else.
-The structured access log is the authoritative record of key usage. Milestone 4 adds a proper
-`audit_log` table.
+The structured access log is the authoritative record of key usage; `audit_log` (below) records
+who did what.
 
 ## Migration policy
 
@@ -206,9 +206,52 @@ Per-switch outcome within a run, so a partial run is explainable rather than mer
 `switch_id` is `ON DELETE SET NULL` while `switch_name` is a snapshot — run history stays
 auditable after a switch is removed from inventory.
 
+## Milestone 4 — audit trail
+
+### `audit_log`
+
+One row per security-relevant event: a sync trigger, and a call rejected for insufficient scope.
+
+| Column | Notes |
+|---|---|
+| `occurred_at` | The only timestamp. **No `created_at`/`updated_at` pair** |
+| `action` | `sync.trigger`, `auth.denied`, `switch.*`, `apikey.*` — dotted so `LIKE 'switch.%'` selects a family |
+| `outcome` | `success` \| `denied` \| `error` |
+| `api_key_id` | FK → `api_keys.id`, `ON DELETE SET NULL` |
+| `api_key_name` | Snapshot, so deleting a key does not erase what it did |
+| `actor` | The human identity, **caller-asserted and not verified by NAS**. 320 chars = the longest legal email address |
+| `source_ip` | 45 chars = the longest textual IPv6 form |
+| `correlation_id` | Joins the row to the request's log lines and to `sync_runs` |
+| `target_type`, `target_id` | What was acted on, e.g. `("sync_run", "42")`. Text, so it holds a name as readily as an id |
+| `detail` | JSONB of action-specific context. Never secrets |
+
+Indexes on `occurred_at` and `action` only. "What happened recently" and "everything of this
+kind" are what a runbook actually asks; the rest is forensic and can scan.
+
+Four decisions worth not reversing:
+
+- **This table has no `updated_at`, and must not gain one.** Every other table uses the
+  `TimestampMixin` pair. A row that can be amended after the fact is not an audit record.
+- **Attribution is stored twice, deliberately.** `api_key_id` is a live FK for joins;
+  `api_key_name` is a snapshot. Revoking and deleting a key must leave the history intact —
+  the same reasoning as `sync_run_switches.switch_name`.
+- **`actor` sits beside `api_key_name`, never instead of it.** NAS authenticates the key, not the
+  person; ClientManager forwards the logged-in user. The key is what NAS *proved*, the actor is
+  what it was *told*. Collapsing them would present an unverified claim as fact.
+- **There is no delete or update path in the application.** The repository Protocol exposes
+  `record` and `list` and nothing else. Retention belongs to database administration — a
+  scheduled job or a partition drop — so "clear the evidence" is not a one-line code change.
+
+Writes go through `AuditService`, which holds a session *factory* and commits on its own
+session. An entry written on the request's session would be rolled back with it, and a rejected
+`POST /sync` (409) is precisely a request that raises. A failed audit write is logged at `error`
+with the whole entry inline and does **not** fail the operation: by then the switches have
+already been polled, so a 500 would report failure for work that succeeded and the caller's
+retry would poll them again.
+
 ### Enum-backed columns
 
-`state`, `mode`, `trigger`, `status` and `outcome` are plain `VARCHAR` with **no** CHECK
+`state`, `mode`, `trigger`, `status`, `outcome` and `action` are plain `VARCHAR` with **no** CHECK
 constraint, matching the `switches.vendor` precedent: the application owns the allowed values, so
 adding one needs no migration. `vlan_id`'s range check is different — that is real data integrity,
 not an enum.

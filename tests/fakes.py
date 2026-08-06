@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Any
 
 from nas.core.credentials import AuthMethod, CredentialNotFoundError, DeviceCredential
 from nas.domain.entities import (
     ApiKey,
+    AuditEntry,
     Switch,
     SyncRun,
     SyncRunSwitch,
@@ -20,6 +22,8 @@ from nas.domain.entities import (
     VlanInterface,
 )
 from nas.domain.enums import (
+    AuditAction,
+    AuditOutcome,
     SwitchSyncOutcome,
     SyncStatus,
     SyncTrigger,
@@ -28,11 +32,13 @@ from nas.domain.enums import (
 )
 from nas.domain.pagination import Page, PageRequest
 from nas.repositories.protocols import (
+    AuditFilters,
     NewApiKey,
     NewSwitch,
     SwitchFilters,
     VlanFilters,
 )
+from nas.services.audit import sanitize_actor
 
 EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -220,6 +226,110 @@ class FakeDatabase:
 
     async def dispose(self) -> None:
         self.dispose_calls += 1
+
+
+class InMemoryAuditRepository:
+    """Implements AuditRepository. Append and read, like the real one."""
+
+    def __init__(self, entries: list[AuditEntry] | None = None) -> None:
+        self._entries: list[AuditEntry] = list(entries or [])
+        self._next_id = max((e.id or 0 for e in self._entries), default=0) + 1
+
+    async def record(self, entry: AuditEntry) -> AuditEntry:
+        stored = replace(entry, id=self._next_id)
+        self._next_id += 1
+        self._entries.append(stored)
+        return stored
+
+    async def list(self, *, filters: AuditFilters, page_request: PageRequest) -> Page[AuditEntry]:
+        matched = [entry for entry in self._entries if self._matches(entry, filters)]
+        # Newest first, id descending as the tiebreak — mirrors the SQL ordering so a
+        # test written against this fake means the same thing against PostgreSQL.
+        matched.sort(key=lambda e: (e.occurred_at, e.id or 0), reverse=True)
+        start = page_request.offset
+        return Page(
+            items=tuple(matched[start : start + page_request.limit]),
+            total=len(matched),
+            page=page_request.page,
+            page_size=page_request.page_size,
+        )
+
+    @staticmethod
+    def _matches(entry: AuditEntry, filters: AuditFilters) -> bool:
+        if filters.action is not None and entry.action is not filters.action:
+            return False
+        if filters.outcome is not None and entry.outcome is not filters.outcome:
+            return False
+        if filters.actor and (entry.actor or "").lower() != filters.actor.lower():
+            return False
+        return not (filters.since is not None and entry.occurred_at < filters.since)
+
+
+class FakeAuditService:
+    """Stands in for AuditService, capturing entries instead of writing them.
+
+    The real service owns a session factory so audit rows survive a rolled-back
+    request; that is untestable without a database, so API tests get this and the
+    transaction behaviour is covered by the integration suite instead.
+
+    ``sanitize_actor`` is applied here too. Without it a test could assert that a
+    hostile actor string was stored verbatim and pass, while production stored the
+    cleaned version.
+    """
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.entries: list[AuditEntry] = []
+        # Simulates an unwritable audit table: the real service swallows and logs.
+        self.fail = fail
+        self._next_id = 1
+
+    async def record(
+        self,
+        *,
+        action: AuditAction,
+        outcome: AuditOutcome,
+        api_key_id: int | None = None,
+        api_key_name: str | None = None,
+        actor: str | None = None,
+        source_ip: str | None = None,
+        correlation_id: str | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> AuditEntry | None:
+        if self.fail:
+            return None
+        entry = AuditEntry(
+            id=self._next_id,
+            action=action,
+            outcome=outcome,
+            occurred_at=occurred_at or datetime.now(UTC),
+            api_key_id=api_key_id,
+            api_key_name=api_key_name,
+            actor=sanitize_actor(actor),
+            source_ip=source_ip,
+            correlation_id=correlation_id,
+            target_type=target_type,
+            target_id=target_id,
+            detail=detail,
+        )
+        self._next_id += 1
+        self.entries.append(entry)
+        return entry
+
+    def of_action(self, action: AuditAction) -> list[AuditEntry]:
+        return [entry for entry in self.entries if entry.action is action]
+
+    @property
+    def only(self) -> AuditEntry:
+        """The single recorded entry, asserting there is exactly one.
+
+        Keeps tests from passing because they happened to inspect entries[0] of
+        several — an audit write firing twice is itself a bug.
+        """
+        assert len(self.entries) == 1, f"expected exactly one audit entry, got {len(self.entries)}"
+        return self.entries[0]
 
 
 def make_vlan(

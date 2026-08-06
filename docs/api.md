@@ -31,9 +31,14 @@ A route declares the scopes it needs; a key lacking any of them is rejected with
 | `vlans:read` | Read VLAN data (Milestone 2) |
 | `sync:read` | Read synchronisation status and history (Milestone 2) |
 | `sync:write` | Trigger a synchronisation (Milestone 2) |
+| `audit:read` | Read the audit trail (Milestone 4) |
 
 Grant the minimum. ClientManager needs the three read scopes plus, if you want a "Sync Now" button,
 `sync:write` — nothing else.
+
+**`audit:read` is deliberately not part of that set.** The trail records who triggered what; a key
+issued to look up VLANs has no business enumerating it. Mint a separate key for an operator who
+needs to read it.
 
 ### Rejection semantics
 
@@ -85,6 +90,19 @@ so a disallowed address cannot use the API to test key validity at all.
 Send `X-Request-ID` and NAS will adopt and echo it, so a ClientManager request traces across both
 services. Omit it and NAS generates one. Inbound values are length-capped at 64 characters and
 stripped to `[A-Za-z0-9._-]`, because they land in log records.
+
+### Identifying the acting user
+
+Send `X-Actor` on `POST /api/v1/sync` with the identity of the person who asked for it — an email
+address, typically. NAS records it in the audit trail.
+
+**NAS does not verify it.** NAS authenticates your API key, not the human behind the request, so
+the value is exactly as trustworthy as your application. It is stored alongside the key's name,
+never instead of it, and the audit response returns both.
+
+Treated as untrusted input: anything outside `[\w.@+\- ]` is stripped and the value is truncated
+to 320 characters (the longest legal email address). An unusable or absent value produces an entry
+with `actor: null` rather than a rejected request — a missing identity must not prevent a sync.
 
 ### Error codes
 
@@ -287,6 +305,9 @@ Two behaviours ClientManager should surface:
 - **A switch that cannot be read never has its VLANs marked missing.** Its data is left exactly
   as the last successful run left it, and the switch is reported `failed`.
 
+Every outcome is audited — success, the 409, and an unexpected failure. Send `X-Actor` so the trail
+can name the person rather than only the calling application.
+
 ## `GET /api/v1/sync/status`
 
 The endpoint to poll for a dashboard. Requires `sync:read`.
@@ -299,3 +320,48 @@ The endpoint to poll for a dashboard. Requires `sync:read`.
 
 History, newest first, and one run with per-switch detail. Requires `sync:read`. The list view
 omits `switch_results`; fetch a single run for that.
+
+## `GET /api/v1/audit`
+
+The audit trail, newest first. Requires `audit:read`.
+
+Records actions that reach a device or change state, plus calls rejected for insufficient scope.
+Routine reads are **not** recorded — the structured access log already has every request, and a row
+per VLAN lookup would bury a sync against production hardware. Authentication failures are also
+excluded: the presented key is unknown, so there is nothing to attribute the row to.
+
+| Query | Meaning |
+|---|---|
+| `action` | Exact match, e.g. `sync.trigger`, `auth.denied` |
+| `outcome` | `success` \| `denied` \| `error` |
+| `actor` | Case-insensitive exact match |
+| `since` | Entries at or after this instant (inclusive) |
+| `page`, `page_size` | Default page size 50 |
+
+```json
+{
+  "data": [
+    {
+      "id": 41,
+      "action": "sync.trigger",
+      "outcome": "success",
+      "occurred_at": "2026-08-06T09:12:04Z",
+      "api_key_name": "clientmanager",
+      "actor": "gilbert@angani.co",
+      "source_ip": "10.10.10.238",
+      "correlation_id": "a1b2c3",
+      "target_type": "sync_run",
+      "target_id": "42",
+      "detail": {"switch_ids": null, "status": "success", "switches_total": 1}
+    }
+  ],
+  "pagination": {"page": 1, "page_size": 50, "total": 41}
+}
+```
+
+Read `api_key_name` and `actor` together: the first is what NAS authenticated, the second is what
+your application asserted. `correlation_id` joins the entry to NAS's log lines and, for a sync, to
+the `sync_runs` row named by `target_id`.
+
+There is no endpoint that writes, amends or deletes an entry. Entries are a side effect of the
+action they describe, and retention is a database-administration task.
