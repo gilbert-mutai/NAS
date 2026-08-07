@@ -154,6 +154,36 @@ Nothing else is needed — the actor header is optional and old callers keep wor
    through the API rather than psql.
 6. **Security review** of the whole Phase 1 surface.
 
+## After Milestone 4: Phase 2 — VLAN usage mapping and tagging
+
+**Designed on paper only. Do not start building it yet.** Full plan in
+[roadmap.md](roadmap.md#phase-2--vlan-usage-mapping-and-tagging).
+
+The short version, because it explains a limitation people will ask about:
+
+- The switch NAS reads has 69 VLANs and **almost none are mapped to anything**.
+  `show vlan brief` reports access ports only, so 68 of 69 come back with no ports —
+  they are trunk-carried. "Is 1234 free?" works today; "used by what?" does not,
+  because the data is not readable from this device.
+- Gilbert is getting access to switches with full configuration. **Phase 2 is blocked
+  on that hardware, not on us** — building it against the one switch we have would
+  produce a feature that looks right in development and reports almost nothing in
+  production.
+- Then: read trunk membership (step 1, read-only), relate VLANs to
+  computes/environments (step 2), and let support engineers tag VLANs themselves
+  (step 3 — the first **write** in the system, to NAS's database only, never to a
+  device).
+
+Two things to settle before any schema work, because each changes the design:
+where the compute/environment inventory lives (NAS must not become a second stale
+source of truth), and how an engineer's *assertion* is kept visually distinct from
+something discovery *observed*. A stale assertion presented as fact is the same trap
+the lookup screen's staleness handling already guards against.
+
+Note step 1 causes a **one-off churn event**: including trunk members changes every
+interface signature, so the next sync reports every Cisco VLAN as `updated` exactly
+once. Expect it rather than debugging it.
+
 ## Known gaps, deliberately deferred
 
 - **Trunk membership.** Only VLAN 1 shows ports; the other 68 are trunk-carried, and
