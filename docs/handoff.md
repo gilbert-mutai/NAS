@@ -15,7 +15,7 @@ log — has shipped.
 | NAS repo | `nas/` — separate git repo inside the ClientManager working dir, gitignored from it |
 | NAS remote | `https://github.com/gilbert-mutai/NAS.git` · `master` / `nas-gilbert` |
 | ClientManager | `master` / `gilbert` |
-| Quality gate | ruff · `mypy --strict` (63 files) · **588 NAS tests** · **161 ClientManager tests** · no migration drift |
+| Quality gate | ruff · `mypy --strict` (63 files) · **603 NAS tests** · **161 ClientManager tests** · no migration drift |
 | Staging | live, syncing a production Catalyst 3650 every 15 min |
 | ClientManager UI | behind `NETOPS_ENABLED`, **default off** — see below |
 
@@ -80,7 +80,7 @@ cd nas
 docker compose up -d                      # PostgreSQL on 127.0.0.1:5434
 export PATH="$PWD/.venv/bin:$PATH"
 export NAS_TEST_DATABASE_URL=postgresql+asyncpg://nas:nas@localhost:5434/nas_test
-pytest                                    # 588
+pytest                                    # 603
 ```
 
 Port 5434 is deliberate: 5432 is ClientManager's PostgreSQL, 5433 belongs to an unrelated
@@ -105,21 +105,34 @@ Hostname markers inject driver failures: `-unreachable`, `-badauth`, `-garbled`.
 
 `audit_log` records `sync.trigger` (success, 409, and unexpected failure) and
 `auth.denied`. Attribution is **two columns on purpose** — `api_key_name` is what NAS
-authenticated, `actor` is what the caller asserted via `X-Actor` and is not verified.
-ClientManager forwards the logged-in user's email on "Sync Now".
+authenticated, `actor` is what the caller asserted and is not verified.
+
+**All three triggers are covered.** The write is in `SyncService.run`, the choke point
+every path goes through, so a new caller is audited by construction:
+
+| Trigger | actor |
+|---|---|
+| API | `X-Actor`, forwarded by ClientManager from the logged-in user |
+| CLI | `SUDO_USER`, else the login name — verified live on App-Server |
+| Scheduler | none; the entry is `unattributed`, which is the honest record |
+
+`detail->>'trigger'` separates them, so the ~96 scheduled entries/day can be filtered
+out of a report without being left out of the record.
 
 Reads are not audited (the access log already has them) and neither are authentication
 failures (nothing to attribute, and trivially floodable). Readable at
 `GET /api/v1/audit` under a new `audit:read` scope, which is **not** in the read-only
 bundle ClientManager holds.
 
-Two behaviours to know before changing it:
+Three behaviours to know before changing it:
 
 - `AuditService` commits on **its own session**, so a rejected sync's entry survives
   the request rollback. Remove that and the 409 stops being recorded.
 - A failed audit write **does not fail the request** — it logs at `error` with the
   whole entry inline. By then the switches have been polled, so a 500 would report
   failure for work that succeeded and the retry would poll them again.
+- `SyncService`'s `audit` argument is **required**. An audit gap must not be creatable
+  by forgetting a parameter, so mypy rejects any construction site that omits it.
 
 **Deployment note:** the migration adds a table; run `nas db upgrade` on App-Server.
 Nothing else is needed — the actor header is optional and old callers keep working.

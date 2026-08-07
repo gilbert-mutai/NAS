@@ -38,7 +38,7 @@ from nas.repositories.protocols import (
     SwitchFilters,
     VlanFilters,
 )
-from nas.services.audit import sanitize_actor
+from nas.services.audit import AuditContext, sanitize_actor
 
 EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -493,9 +493,13 @@ class InMemorySyncRunRepository:
 class FakeSyncService:
     """Stands in for SyncService in API tests.
 
-    The real service owns a session factory and drives device I/O; the endpoint's
-    job is only to call it, translate the result, and surface a 409 when a run is
-    already in progress.
+    The real service owns a session factory, drives device I/O **and writes the audit
+    entry**; the endpoint's job is only to call it, hand over the attribution context,
+    translate the result, and surface a 409 when a run is already in progress.
+
+    ``calls`` records ``audit_context`` so a route test can assert the context was
+    forwarded. That the entry is then actually written is the service's contract,
+    covered in tests/integration/test_sync_service.py against a real database.
     """
 
     def __init__(self, *, conflict: bool = False) -> None:
@@ -509,10 +513,18 @@ class FakeSyncService:
         trigger: SyncTrigger,
         correlation_id: str | None = None,
         switch_ids: list[int] | None = None,
+        audit_context: AuditContext | None = None,
     ) -> SyncRun:
         from nas.services.sync import SyncAlreadyRunningError
 
-        self.calls.append({"trigger": trigger, "switch_ids": switch_ids})
+        self.calls.append(
+            {
+                "trigger": trigger,
+                "switch_ids": switch_ids,
+                "correlation_id": correlation_id,
+                "audit_context": audit_context,
+            }
+        )
         if self.conflict:
             raise SyncAlreadyRunningError
 

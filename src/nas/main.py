@@ -27,6 +27,7 @@ from nas.core.middleware import (
 )
 from nas.db.session import Database
 from nas.scheduler.runner import SyncScheduler
+from nas.services.audit import AuditService
 from nas.services.sync import SyncOptions, SyncService
 
 logger = get_logger(__name__)
@@ -119,6 +120,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sync_service = SyncService(
         session_factory=app.state.database.session_factory,
         credential_provider=app.state.credential_provider,
+        audit=AuditService(app.state.database.session_factory),
         options=SyncOptions(
             max_concurrency=settings.sync_max_concurrency,
             allow_empty_discovery=settings.sync_allow_empty_discovery,
