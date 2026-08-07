@@ -13,13 +13,27 @@ import asyncio
 import pytest
 from sqlalchemy import text
 
+from nas.core.security import Scope, generate_api_key
 from nas.db.locks import LockNotAcquiredError, advisory_lock
 from nas.db.session import Database
-from nas.domain.enums import SwitchSyncOutcome, SyncStatus, SyncTrigger, Vendor, VlanState
-from nas.repositories.protocols import NewSwitch
+from nas.domain.entities import ApiKey, AuditEntry
+from nas.domain.enums import (
+    AuditAction,
+    AuditOutcome,
+    SwitchSyncOutcome,
+    SyncStatus,
+    SyncTrigger,
+    Vendor,
+    VlanState,
+)
+from nas.domain.pagination import PageRequest
+from nas.repositories.api_keys import SqlAlchemyApiKeyRepository
+from nas.repositories.audit import SqlAlchemyAuditRepository
+from nas.repositories.protocols import AuditFilters, NewApiKey, NewSwitch
 from nas.repositories.switches import SqlAlchemySwitchRepository
 from nas.repositories.sync_runs import SqlAlchemySyncRunRepository
 from nas.repositories.vlans import SqlAlchemyVlanRepository
+from nas.services.audit import AuditContext, AuditService
 from nas.services.sync import SyncAlreadyRunningError, SyncOptions, SyncService
 from tests.fakes import FakeCredentialProvider
 
@@ -30,8 +44,38 @@ def build_service(db: Database, **options: object) -> SyncService:
     return SyncService(
         session_factory=db.session_factory,
         credential_provider=FakeCredentialProvider({"mock-local"}),
+        # The real AuditService, not a fake: it commits on its own session, and the
+        # audit assertions below read the rows back through PostgreSQL.
+        audit=AuditService(db.session_factory),
         options=SyncOptions(max_concurrency=4, **options),  # type: ignore[arg-type]
     )
+
+
+async def make_api_key(db: Database, name: str) -> ApiKey:
+    """A real `api_keys` row.
+
+    Needed because `audit_log.api_key_id` is a genuine foreign key: a dangling id
+    makes the insert fail, and since a failed audit write is swallowed by design the
+    entry would silently never appear. Discovered by writing exactly that bug here.
+    """
+    generated = generate_api_key()
+    async with db.session() as session:
+        return await SqlAlchemyApiKeyRepository(session).create(
+            NewApiKey(
+                name=name,
+                prefix=generated.prefix,
+                key_hash=generated.key_hash,
+                scopes=frozenset({Scope.SYNC_WRITE.value}),
+            )
+        )
+
+
+async def audit_entries(db: Database) -> tuple[AuditEntry, ...]:
+    async with db.session_factory() as session:
+        page = await SqlAlchemyAuditRepository(session).list(
+            filters=AuditFilters(), page_request=PageRequest(page=1, page_size=50)
+        )
+    return page.items
 
 
 async def register(
@@ -365,3 +409,225 @@ class TestAdvisoryLock:
                     raise RuntimeError("boom")
             async with advisory_lock(second):
                 pass
+
+
+class TestEveryTriggerIsAudited:
+    """The audit write lives in SyncService, so no entry point can skip it.
+
+    It started out in the API route, which covered only HTTP-triggered runs and left
+    the scheduler and `nas sync run` silent — the CLI being the least supervised path
+    to a production switch, and so the worst one to miss. These tests exist to keep
+    that regression from returning: a new caller of `run()` is audited by
+    construction.
+    """
+
+    async def test_a_manual_api_run_is_attributed_to_both_key_and_actor(self, db: Database) -> None:
+        await register(db, "sw-audit-1")
+        key = await make_api_key(db, "clientmanager")
+        service = build_service(db)
+        run = await service.run(
+            trigger=SyncTrigger.MANUAL,
+            audit_context=AuditContext(
+                actor="gilbert@angani.co",
+                source_ip="10.10.10.238",
+                api_key_id=key.id,
+                api_key_name=key.name,
+            ),
+        )
+
+        entries = await audit_entries(db)
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.action is AuditAction.SYNC_TRIGGER
+        assert entry.outcome is AuditOutcome.SUCCESS
+        assert entry.actor == "gilbert@angani.co"
+        assert entry.api_key_name == "clientmanager"
+        assert entry.attribution == "gilbert@angani.co via clientmanager"
+        assert entry.target_type == "sync_run"
+        assert entry.target_id == str(run.id)
+
+    async def test_a_scheduled_run_is_audited_with_no_actor(self, db: Database) -> None:
+        """The timer has no human behind it, so an empty actor is the honest record —
+        not a placeholder that would read like an identity."""
+        await register(db, "sw-audit-2")
+        service = build_service(db)
+        await service.run(trigger=SyncTrigger.SCHEDULED)
+
+        entry = (await audit_entries(db))[0]
+        assert entry.outcome is AuditOutcome.SUCCESS
+        assert entry.actor is None
+        assert entry.api_key_name is None
+        assert entry.attribution == "unattributed"
+
+    async def test_a_cli_run_is_attributed_to_the_invoking_user(self, db: Database) -> None:
+        """The gap that motivated moving the write. Someone with shell access can sync
+        a production switch; the trail must name them."""
+        await register(db, "sw-audit-3")
+        service = build_service(db)
+        await service.run(
+            trigger=SyncTrigger.CLI,
+            audit_context=AuditContext(actor="infra-admin", source_ip="cli"),
+        )
+
+        entry = (await audit_entries(db))[0]
+        assert entry.actor == "infra-admin"
+        assert entry.source_ip == "cli"
+        assert entry.api_key_name is None, "no API key is involved in a CLI run"
+
+    @pytest.mark.parametrize(
+        "trigger", [SyncTrigger.MANUAL, SyncTrigger.SCHEDULED, SyncTrigger.CLI]
+    )
+    async def test_the_trigger_is_recorded_in_the_detail(
+        self, db: Database, trigger: SyncTrigger
+    ) -> None:
+        """So scheduled noise can be filtered with detail->>'trigger' while still
+        being present. Parametrised across all three to prove none is special-cased."""
+        await register(db, f"sw-audit-{trigger.value}")
+        await build_service(db).run(trigger=trigger)
+
+        detail = (await audit_entries(db))[0].detail
+        assert detail is not None
+        assert detail["trigger"] == trigger.value
+
+    async def test_requested_switch_ids_are_recorded(self, db: Database) -> None:
+        switch_id = await register(db, "sw-audit-targeted")
+        await register(db, "sw-audit-untouched")
+        await build_service(db).run(trigger=SyncTrigger.MANUAL, switch_ids=[switch_id])
+
+        detail = (await audit_entries(db))[0].detail
+        assert detail is not None
+        assert detail["switch_ids"] == [switch_id]
+
+    async def test_the_correlation_id_ties_the_entry_to_the_run(self, db: Database) -> None:
+        await register(db, "sw-audit-corr")
+        run = await build_service(db).run(
+            trigger=SyncTrigger.MANUAL, correlation_id="clientmanager-abc-123"
+        )
+
+        entry = (await audit_entries(db))[0]
+        assert entry.correlation_id == "clientmanager-abc-123"
+        assert run.correlation_id == "clientmanager-abc-123"
+
+    async def test_a_hostile_actor_is_sanitised_before_storage(self, db: Database) -> None:
+        """Sanitising is inside AuditService, so it applies to every trigger and
+        cannot be bypassed by a caller that constructs its own context."""
+        await register(db, "sw-audit-hostile")
+        await build_service(db).run(
+            trigger=SyncTrigger.CLI,
+            audit_context=AuditContext(actor="infra-admin\nlevel=info event=approved"),
+        )
+
+        actor = (await audit_entries(db))[0].actor
+        assert actor is not None
+        assert "\n" not in actor
+
+    async def test_a_partial_run_records_its_status(self, db: Database) -> None:
+        """`partial` is the status that tells an operator the data is only partly
+        trustworthy, so the trail should not flatten it to a bare success."""
+        await register(db, "sw-audit-ok")
+        # The mock driver keys off the *hostname*, not the switch name.
+        await register(db, "sw-audit-bad", hostname="10.90.9.9-unreachable")
+        run = await build_service(db).run(trigger=SyncTrigger.MANUAL)
+        assert run.status is SyncStatus.PARTIAL
+
+        detail = (await audit_entries(db))[0].detail
+        assert detail is not None
+        assert detail["status"] == "partial"
+
+
+class TestRejectedRunIsAudited:
+    async def test_a_run_blocked_by_the_lock_is_recorded(self, db: Database) -> None:
+        """And this is why AuditService commits on its own session: the caller sees an
+        exception, so anything written on a request-scoped transaction would be rolled
+        back and the rejection would leave no trace."""
+        await register(db, "sw-audit-locked")
+        service = build_service(db)
+
+        async with db.session_factory() as holder, advisory_lock(holder):
+            with pytest.raises(SyncAlreadyRunningError):
+                await service.run(
+                    trigger=SyncTrigger.MANUAL,
+                    audit_context=AuditContext(actor="gilbert@angani.co"),
+                )
+
+        entries = await audit_entries(db)
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.outcome is AuditOutcome.ERROR
+        assert entry.actor == "gilbert@angani.co"
+        assert entry.target_id is None, "nothing started, so there is no run to point at"
+        assert entry.detail is not None
+        assert entry.detail["rejected"] == "CONFLICT"
+
+    async def test_no_sync_run_row_was_created(self, db: Database) -> None:
+        """Guards the pairing: a rejected trigger leaves an audit entry but must not
+        leave a sync_runs row, or /sync/status would report a phantom run."""
+        await register(db, "sw-audit-locked-2")
+        service = build_service(db)
+
+        async with db.session_factory() as holder, advisory_lock(holder):
+            with pytest.raises(SyncAlreadyRunningError):
+                await service.run(trigger=SyncTrigger.MANUAL)
+
+        async with db.session_factory() as session:
+            runs = await SqlAlchemySyncRunRepository(session).list(
+                page_request=PageRequest(page=1, page_size=10)
+            )
+        assert runs.total == 0
+        assert len(await audit_entries(db)) == 1
+
+
+class TestTheCliIsAudited:
+    """Runs the real `nas sync run` command, not just the service beneath it.
+
+    The CLI was the gap that motivated moving the audit write, so verifying it needs
+    the actual command: unit-testing `_cli_audit_context` proves the identity is
+    resolved, and the service tests prove a supplied context is stored, but neither
+    catches the command forgetting to pass one — which is exactly the bug being fixed.
+    """
+
+    @staticmethod
+    def _invoke(database_url: str, env: dict[str, str]) -> object:
+        """Invoke the CLI. Must run off the test's event loop.
+
+        The command is a synchronous Typer callback that calls ``asyncio.run``
+        internally, which raises if a loop is already running — so the caller hands
+        this to ``asyncio.to_thread`` and it gets a loop of its own.
+        """
+        from typer.testing import CliRunner
+
+        from nas.cli import app
+        from nas.core.config import get_settings
+
+        # The CLI builds its own Database from settings, so point settings at the test
+        # database. get_settings is cached, hence the clears on both sides.
+        get_settings.cache_clear()
+        try:
+            return CliRunner().invoke(
+                app,
+                ["sync", "run"],
+                env={"NAS_DATABASE_URL": database_url, **env},
+            )
+        finally:
+            get_settings.cache_clear()
+
+    async def test_a_cli_sync_records_the_invoking_user(
+        self, db: Database, migrated_database: str
+    ) -> None:
+        await register(db, "sw-cli-audit")
+
+        result = await asyncio.to_thread(
+            self._invoke, migrated_database, {"SUDO_USER": "infra-admin"}
+        )
+        assert getattr(result, "exit_code", None) == 0, getattr(result, "output", result)
+
+        entries = await audit_entries(db)
+        assert len(entries) == 1, "the CLI path must not be silent"
+        entry = entries[0]
+        assert entry.action is AuditAction.SYNC_TRIGGER
+        assert entry.outcome is AuditOutcome.SUCCESS
+        assert entry.actor == "infra-admin", "attributed to whoever escalated, not to `nas`"
+        assert entry.source_ip == "cli"
+        assert entry.api_key_name is None
+        assert entry.detail is not None
+        assert entry.detail["trigger"] == "cli"

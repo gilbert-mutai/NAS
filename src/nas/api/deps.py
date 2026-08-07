@@ -38,7 +38,7 @@ from nas.repositories.protocols import (
 from nas.repositories.switches import SqlAlchemySwitchRepository
 from nas.repositories.sync_runs import SqlAlchemySyncRunRepository
 from nas.repositories.vlans import SqlAlchemyVlanRepository
-from nas.services.audit import AuditService
+from nas.services.audit import AuditContext, AuditService
 from nas.services.auth import AuthenticationService
 from nas.services.switches import SwitchService
 from nas.services.sync import SyncService
@@ -181,17 +181,17 @@ def get_audit_service(
 
 @dataclass(frozen=True, slots=True)
 class RequestContext:
-    """Who made this request and how to correlate it — everything an audit entry
-    needs from the transport layer, resolved in one place.
+    """Who made this request and how to correlate it, resolved in one place.
 
-    ``api_key`` is what NAS authenticated. ``actor`` is what the caller asserted and
-    is not verified; the distinction is preserved all the way into the audit row.
+    ``audit`` is the attribution bundle handed to whatever records the action — the
+    service layer, not the route, since the scheduler and CLI need the same thing
+    with different contents. ``api_key`` stays available for routes that need the
+    key itself.
     """
 
     api_key: ApiKey
-    actor: str | None
-    source_ip: str | None
     correlation_id: str | None
+    audit: AuditContext
 
 
 def audited_context(*scopes: Scope) -> Callable[..., Awaitable[RequestContext]]:
@@ -221,9 +221,13 @@ def audited_context(*scopes: Scope) -> Callable[..., Awaitable[RequestContext]]:
         )
         return RequestContext(
             api_key=api_key,
-            actor=request.headers.get(ACTOR_HEADER_NAME),
-            source_ip=getattr(request.state, "client_ip", None),
             correlation_id=getattr(request.state, "request_id", None),
+            audit=AuditContext(
+                actor=request.headers.get(ACTOR_HEADER_NAME),
+                source_ip=getattr(request.state, "client_ip", None),
+                api_key_id=api_key.id,
+                api_key_name=api_key.name,
+            ),
         )
 
     return dependency

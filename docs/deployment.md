@@ -364,16 +364,33 @@ curl -H "X-API-Key: $KEY" https://nas.internal/api/v1/switches
 ## Upgrades
 
 ```bash
-cd /opt/nas
-sudo -u nas git pull
-sudo -u nas .venv/bin/pip install .
-sudo -u nas .venv/bin/nas db upgrade
+# The checkout is /opt/nas/app; /opt/nas is mode 0700 owned by `nas`, so an admin
+# cannot cd into it. Run as `nas` and cd *inside* that shell — every line here does.
+sudo -u nas sh -c 'cd /opt/nas/app && git pull'
+sudo -u nas sh -c 'cd /opt/nas/app && .venv/bin/pip install .'
+sudo -u nas sh -c 'cd /opt/nas/app && .venv/bin/nas db current'   # what is applied now
+sudo -u nas sh -c 'cd /opt/nas/app && .venv/bin/nas db upgrade'
 sudo systemctl restart nas.service
-curl -sf https://nas.internal/ready
+
+# Give it ~5s. Startup takes about three seconds, and a check that races it fails
+# misleadingly. -f hides the body, so drop it when diagnosing.
+sleep 5 && curl -s -w '\nHTTP %{http_code}\n' http://127.0.0.1:8000/ready
 ```
 
 Run `nas db upgrade` before the restart. Migrations are additive in Phase 1, so a brief version
 skew during the restart is harmless.
+
+`nas` is not on an admin's `PATH` — it lives in the venv at `/opt/nas/app/.venv/bin/nas`. A bare
+`nas db upgrade` gives "command not found".
+
+**Deploying is two steps, and the first is on GitHub.** `/opt/nas/app` tracks `master`, so work
+merged only into `nas-gilbert` is not on the server no matter how many times you pull. Confirm the
+commit you want is actually there before upgrading:
+
+```bash
+sudo -u nas sh -c 'cd /opt/nas/app && git fetch -q &&
+  git merge-base --is-ancestor <sha> origin/master && echo "IN master" || echo "NOT in master"'
+```
 
 ### Upgrading to the audit-log release (`0003_audit_log`)
 
@@ -385,6 +402,10 @@ is required, and nothing breaks if you forget the rest:
 - **The existing `clientmanager` key keeps working unchanged.** It does not gain `audit:read`,
   which is deliberate — that scope lets a caller enumerate who triggered what, and ClientManager
   does not need it.
+
+**CLI syncs are attributed too.** `nas sync run` records `SUDO_USER` (falling back to
+the login name) as the actor with `source_ip = 'cli'`. So run it the documented way —
+`sudo -u nas sh -c '...'` — and the trail names you rather than the service account.
 
 To read the trail through the API, mint a separate operator key:
 

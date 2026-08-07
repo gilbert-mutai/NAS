@@ -16,6 +16,8 @@ at an attacker-controlled device.
 from __future__ import annotations
 
 import asyncio
+import getpass
+import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -33,6 +35,7 @@ from nas.domain.pagination import PageRequest
 from nas.repositories.api_keys import SqlAlchemyApiKeyRepository
 from nas.repositories.protocols import NewApiKey, NewSwitch, SwitchFilters
 from nas.repositories.switches import SqlAlchemySwitchRepository
+from nas.services.audit import AuditContext
 
 app = typer.Typer(
     name="nas",
@@ -61,6 +64,31 @@ def _load_settings() -> Settings:
     # Human-readable logs for interactive use; JSON stays the default for the service.
     configure_logging(settings.model_copy(update={"log_format": "console"}))
     return settings
+
+
+def _cli_audit_context() -> AuditContext:
+    """Attribute a CLI action to the human who invoked it.
+
+    This matters more than the API path. A `nas sync run` reaches a production switch
+    from a shell, and the process runs as the service account — so without this the
+    audit trail would record the run with no actor at all, and the least supervised
+    route to a device would be the only unattributed one.
+
+    ``SUDO_USER`` is preferred because the command is documented as
+    `sudo -u nas ...`: the process user is `nas`, and the interesting identity is
+    whoever escalated. Falls back to the login name, then to None rather than a
+    guess — an unattributed entry is honest, a wrong one is not.
+
+    Advisory like every actor: an operator can set `SUDO_USER` to anything. What NAS
+    can state as fact is that the action came from the host, which `source_ip` records.
+    """
+    actor = os.environ.get("SUDO_USER") or ""
+    if not actor:
+        try:
+            actor = getpass.getuser()
+        except Exception:  # pragma: no cover - no passwd entry and no env vars
+            actor = ""
+    return AuditContext(actor=actor or None, source_ip="cli")
 
 
 def _run[T](coro_factory: Callable[[Database], Awaitable[T]]) -> T:
@@ -383,11 +411,13 @@ def sync_run(
 
     async def action(database: Database) -> SyncRun:
         from nas.core.credentials import build_credential_provider
+        from nas.services.audit import AuditService
         from nas.services.sync import SyncOptions, SyncService
 
         service = SyncService(
             session_factory=database.session_factory,
             credential_provider=build_credential_provider(settings),
+            audit=AuditService(database.session_factory),
             options=SyncOptions(
                 max_concurrency=settings.sync_max_concurrency,
                 allow_empty_discovery=settings.sync_allow_empty_discovery,
@@ -397,7 +427,10 @@ def sync_run(
                 verify_device_tls=settings.driver_verify_tls,
             ),
         )
-        return await service.run(trigger=SyncTrigger.CLI)
+        return await service.run(
+            trigger=SyncTrigger.CLI,
+            audit_context=_cli_audit_context(),
+        )
 
     from nas.services.sync import SyncAlreadyRunningError
 

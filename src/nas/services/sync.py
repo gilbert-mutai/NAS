@@ -21,6 +21,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,7 +30,7 @@ from nas.core.errors import ConflictError
 from nas.core.logging import get_logger
 from nas.db.locks import LockNotAcquiredError, advisory_lock
 from nas.domain.entities import Switch, SyncRun
-from nas.domain.enums import SwitchSyncOutcome, SyncTrigger
+from nas.domain.enums import AuditAction, AuditOutcome, SwitchSyncOutcome, SyncTrigger
 from nas.domain.pagination import PageRequest
 from nas.drivers.base import DriverError
 from nas.drivers.options import DriverOptions
@@ -42,6 +43,7 @@ from nas.repositories.protocols import (
 from nas.repositories.switches import SqlAlchemySwitchRepository
 from nas.repositories.sync_runs import SqlAlchemySyncRunRepository
 from nas.repositories.vlans import SqlAlchemyVlanRepository
+from nas.services.audit import AuditContext, AuditService
 from nas.sync.reconciler import ReconciliationRefusedError, build_plan
 
 logger = get_logger(__name__)
@@ -89,10 +91,12 @@ class SyncService:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         credential_provider: CredentialProvider,
+        audit: AuditService,
         options: SyncOptions | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._credentials = credential_provider
+        self._audit = audit
         self._options = options or SyncOptions()
 
     async def run(
@@ -101,25 +105,76 @@ class SyncService:
         trigger: SyncTrigger,
         correlation_id: str | None = None,
         switch_ids: list[int] | None = None,
+        audit_context: AuditContext | None = None,
     ) -> SyncRun:
-        """Execute one synchronisation pass.
+        """Execute one synchronisation pass, and record it in the audit trail.
 
         Raises SyncAlreadyRunningError if another run holds the lock.
+
+        **The audit write lives here, not in the API route.** Auditing at the route
+        covered only HTTP-triggered runs, leaving the scheduler and — more
+        importantly — `nas sync run` on the box unattributed. The CLI is the least
+        supervised path to a production switch, so it was the worst one to miss. This
+        method is the single choke point every trigger passes through, so recording
+        here cannot be bypassed by adding another caller.
+
+        ``audit_context`` carries what the service cannot know: the API passes the
+        authenticated key plus the forwarded user and client address, the CLI passes
+        the invoking OS user, and the scheduler passes nothing — an empty context is
+        the honest record of machine-initiated work.
         """
         correlation_id = correlation_id or uuid.uuid4().hex
         log = logger.bind(correlation_id=correlation_id, trigger=trigger.value)
+        attribution = audit_context or AuditContext()
+
+        async def audit(
+            outcome: AuditOutcome,
+            *,
+            target_id: str | None = None,
+            extra: dict[str, Any] | None = None,
+        ) -> None:
+            await self._audit.record(
+                action=AuditAction.SYNC_TRIGGER,
+                outcome=outcome,
+                api_key_id=attribution.api_key_id,
+                api_key_name=attribution.api_key_name,
+                actor=attribution.actor,
+                source_ip=attribution.source_ip,
+                correlation_id=correlation_id,
+                target_type="sync_run" if target_id else None,
+                target_id=target_id,
+                # `trigger` is in the detail so scheduled noise can be filtered out
+                # with detail->>'trigger', while still being present.
+                detail={"trigger": trigger.value, "switch_ids": switch_ids} | (extra or {}),
+            )
 
         # The lock lives on its own connection for the whole run. PostgreSQL frees
         # it automatically if this process dies, so a crash cannot wedge syncing.
         async with self._session_factory() as lock_session:
             try:
                 async with advisory_lock(lock_session):
-                    return await self._run_locked(
+                    run = await self._run_locked(
                         trigger=trigger, correlation_id=correlation_id, switch_ids=switch_ids
                     )
             except LockNotAcquiredError as exc:
                 log.info("sync_rejected_already_running")
+                # Not a failure of the caller's: they were entitled to ask, and a run
+                # was already under way. Recorded so a burst of rejected triggers is
+                # visible rather than only appearing as 409s in the access log.
+                await audit(AuditOutcome.ERROR, extra={"rejected": "CONFLICT"})
                 raise SyncAlreadyRunningError from exc
+            except Exception as exc:
+                # "A sync was started and never finished" is what an operator needs
+                # to see, so a crash must not leave the trail silent.
+                await audit(AuditOutcome.ERROR, extra={"error": type(exc).__name__})
+                raise
+
+        await audit(
+            AuditOutcome.SUCCESS,
+            target_id=str(run.id),
+            extra={"status": run.status.value, "switches_total": run.switches_total},
+        )
+        return run
 
     async def _run_locked(
         self, *, trigger: SyncTrigger, correlation_id: str, switch_ids: list[int] | None

@@ -2,43 +2,54 @@
 
 ## Deployment topology
 
-As actually deployed at Westpoint. Every address here is real.
+The production setup at Westpoint. Every address here is real.
 
 ```mermaid
 flowchart TB
-    subgraph laptop["Developer laptop"]
+    subgraph users["Support engineers"]
+        ENG["Browser"]
+    end
+
+    subgraph cmhost["ClientManager host"]
         CM["<b>ClientManager</b> — Django<br/>netops app · templates only<br/><i>stores no VLAN data</i>"]
     end
 
     subgraph appsrv["App-Server · 192.168.95.238 / 10.10.10.238"]
         direction TB
+        NGX["Nginx — TLS termination<br/><i>the only listener on the network</i>"]
         NAS["<b>NAS</b> — FastAPI + uvicorn<br/>bound to 127.0.0.1:8000<br/><i>nas.service, user nas</i>"]
         SCHED["APScheduler<br/><i>in-process, every 15 min</i>"]
         CREDS["credentials.yaml · 0600<br/><b>switch credentials exist<br/>only here</b>"]
     end
 
     subgraph dbsrv["DB-Server · 10.10.10.241"]
-        PG[("PostgreSQL 16<br/>database <b>nas</b><br/><i>69 VLAN records</i>")]
+        PG[("PostgreSQL 16<br/>database <b>nas</b><br/><i>VLAN records + audit_log</i>")]
     end
 
     subgraph mgmt["Management LAN · 192.168.95.0/24"]
-        SW["<b>switch-01.westpoint</b><br/>WS-C3650-48PD · IOS-XE 16.6.9<br/>69 VLANs · stack member 3"]
+        SW["<b>switch-01.westpoint</b><br/>WS-C3650-48PD · IOS-XE 16.6.9<br/>69 VLANs"]
+        SWN["further switches<br/><i>to be added</i>"]
     end
 
-    CM -->|"HTTP + X-API-Key<br/>via SSH tunnel<br/>-L 8126:127.0.0.1:8000"| NAS
+    ENG -->|"HTTPS"| CM
+    CM -->|"HTTPS + X-API-Key + X-Actor<br/>IP-allowlisted /32"| NGX
+    NGX -->|"proxy to loopback"| NAS
     SCHED -.->|"triggers sync"| NAS
     CREDS -.->|"read at sync time"| NAS
     NAS -->|"asyncpg over private link<br/>10.10.10.x only"| PG
-    NAS -->|"SSH · nas-readonly · privilege 1<br/>show vlan brief"| SW
+    NAS -->|"SSH · nas-readonly · privilege 1<br/>read-only show commands"| SW
+    NAS -.->|"same driver path"| SWN
 
     classDef trusted fill:#fff4e6,stroke:#e8890c,stroke-width:2px
     classDef consumer fill:#e8f2ff,stroke:#1565c0,stroke-width:2px
     classDef store fill:#eaf7ee,stroke:#2e7d32,stroke-width:2px
     classDef device fill:#f3e8ff,stroke:#7b1fa2,stroke-width:2px
-    class NAS,SCHED,CREDS trusted
-    class CM consumer
+    classDef pending fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px,stroke-dasharray:4 3
+    class NAS,SCHED,CREDS,NGX trusted
+    class CM,ENG consumer
     class PG store
     class SW device
+    class SWN pending
 ```
 
 **The orange boundary is the point of the design.** Everything that can reach a switch
@@ -47,16 +58,24 @@ sessions, uploads, email, many user roles — while NAS is a small single-purpos
 a private network behind an IP allowlist and scoped API keys. A ClientManager compromise
 does not become a network compromise.
 
-Three details the diagram encodes deliberately:
+Four details the diagram encodes deliberately:
 
-- **NAS binds loopback only.** Nothing on the network can reach it. Development goes
-  through an SSH tunnel; production will go through Nginx on the same host.
-- **Two separate networks.** Database traffic uses the private `10.10.10.x` link;
-  the switch is reached over the management LAN. PostgreSQL is bound to the private
-  interface only and refuses connections on `192.168.95.x`.
+- **NAS binds loopback only.** Nothing on the network reaches uvicorn directly; Nginx on
+  the same host terminates TLS and proxies to `127.0.0.1:8000`. Set
+  `NAS_TRUST_PROXY_HEADERS=true` only once Nginx is actually in front — before that,
+  `X-Forwarded-For` is spoofable past the IP allowlist.
+- **Two separate networks.** Database traffic uses the private `10.10.10.x` link; the
+  switch is reached over the management LAN. PostgreSQL is bound to the private interface
+  only and refuses connections on `192.168.95.x`.
 - **ClientManager stores nothing.** The `netops` app has no models and no migrations.
-  Every VLAN shown in the UI is fetched from the NAS API at request time, so there is
-  one source of truth.
+  Every VLAN shown in the UI is fetched from the NAS API at request time, so there is one
+  source of truth.
+- **Adding a switch is inventory, not code.** Further devices join through the same driver
+  path — `nas switch add`, a credential ref, and the next scheduled run picks them up.
+
+Both the current staging state and how to work on it locally are in
+[deployment.md](deployment.md), which is the right place for the SSH tunnel, the dev
+database on port 5434, and everything else that is not production.
 
 ## What a VLAN lookup actually does
 

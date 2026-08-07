@@ -1,13 +1,13 @@
 # Testing strategy
 
-**588 tests. 504 need nothing but Python; 84 need PostgreSQL.**
+**603 tests. 506 need nothing but Python; 97 need PostgreSQL.**
 
 (Counts below are per-milestone snapshots kept for context; the figures above are current.)
 
 ```bash
-pytest                  # all 588; the 84 integration ones need NAS_TEST_DATABASE_URL
-pytest -m "not integration"   # 504, no database, a few seconds
-pytest -m integration   # 84 repository/service tests against real PostgreSQL
+pytest                  # all 603; the 97 integration ones need NAS_TEST_DATABASE_URL
+pytest -m "not integration"   # 506, no database, a few seconds
+pytest -m integration   # 97 repository/service tests against real PostgreSQL
 ruff check . && mypy    # lint + strict type checking
 ```
 
@@ -15,9 +15,9 @@ ruff check . && mypy    # lint + strict type checking
 
 | Layer | Count | Needs | Answers |
 |---|---|---|---|
-| `tests/unit/` | 366 | nothing | Is the logic correct in isolation? |
-| `tests/api/` | 138 | nothing | Does a real HTTP request behave correctly end-to-end? |
-| `tests/integration/` | 84 | PostgreSQL | Does the SQL, and the migration that creates it, actually work? |
+| `tests/unit/` | 373 | nothing | Is the logic correct in isolation? |
+| `tests/api/` | 133 | nothing | Does a real HTTP request behave correctly end-to-end? |
+| `tests/integration/` | 97 | PostgreSQL | Does the SQL, and the migration that creates it, actually work? |
 
 ### Unit tests
 
@@ -262,16 +262,26 @@ When another platform reaches real hardware, record its output the same way.
 
 ## Milestone 4 — audit trail
 
-588 tests. The audit work added 66: 26 API, 24 unit, 16 integration.
+603 tests. The audit work added 81.
 
 | Test | Guards |
 |---|---|
+| `test_sync_service.py::TestEveryTriggerIsAudited` | API, scheduled **and** CLI runs are all recorded — the coverage gap that moved the write out of the route |
+| `test_sync_service.py::TestTheCliIsAudited` | Invokes the real `nas sync run`. Neither the unit test of the identity nor the service test catches the *command* forgetting to pass a context, which is the bug being fixed |
 | `test_audit_repository.py::TestServiceCommitsIndependently` | An audit entry survives a request whose transaction rolls back — the property that makes the rejected-sync entry possible at all |
-| `test_audit.py::TestRejectedSyncIsAudited` | The 409 and an unexpected crash are both recorded, not just the happy path |
+| `test_sync_service.py::TestRejectedRunIsAudited` | The 409 is recorded, and leaves an audit entry *without* a phantom `sync_runs` row |
 | `test_audit.py::TestScopeDenialIsAudited::test_no_sync_ran` | The denial happens *before* the service is reached, so the entry is not describing a sync that already ran |
 | `test_audit_actor.py::TestHostileInput` | Newlines, ANSI escapes and NUL bytes are stripped from a caller-supplied identity |
 | `test_audit_repository.py::TestSurvivingAKeyDeletion` | Deleting an API key nulls the FK but keeps the name — revocation cannot erase history |
 | `test_actor_forwarding.py` (ClientManager) | The acting user is forwarded on the sync trigger and on nothing else |
+
+### Testing the CLI needs a thread
+
+`CliRunner` invokes a synchronous Typer callback that calls `asyncio.run` internally,
+which raises inside pytest's already-running loop. The test hands it to
+`asyncio.to_thread` so it gets a loop of its own. Without that the command appears to
+run and the failure surfaces as `coroutine 'runner' was never awaited` — easy to
+misread as a test-harness problem rather than a real one.
 
 ### Why the transaction test needs a real database
 

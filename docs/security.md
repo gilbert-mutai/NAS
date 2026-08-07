@@ -151,6 +151,26 @@ withdrawn.
 | `sync.trigger` / `error` | Rejected with 409 (a run was already going), or the run raised |
 | `auth.denied` / `denied` | An authenticated key reached for a scope it does not hold |
 
+**Every trigger is covered — API, scheduler and CLI.** The write lives in
+`SyncService.run`, the one choke point all three pass through, so a new caller is
+audited by construction. It was briefly in the API route instead, which left the
+scheduler and `nas sync run` silent; the CLI is the least supervised path to a
+production switch, so that was the worst one to miss.
+
+Attribution differs by path, and the differences are meaningful rather than
+incidental:
+
+| Trigger | `actor` | `api_key_name` | `source_ip` |
+|---|---|---|---|
+| API | forwarded `X-Actor` | the authenticated key | client address |
+| CLI | `SUDO_USER`, else the login name | none — shell access *is* the authorisation | `cli` |
+| Scheduler | none | none | none |
+
+A scheduled entry is `unattributed`, which is the honest record of machine-initiated
+work rather than a placeholder that would read like an identity. `detail->>'trigger'`
+distinguishes the three, so scheduled volume can be filtered out of a report without
+being excluded from the record.
+
 **What is deliberately not recorded**
 
 - **Routine reads.** The structured access log already has every request. A row per VLAN lookup

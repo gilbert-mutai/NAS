@@ -15,7 +15,7 @@ log — has shipped.
 | NAS repo | `nas/` — separate git repo inside the ClientManager working dir, gitignored from it |
 | NAS remote | `https://github.com/gilbert-mutai/NAS.git` · `master` / `nas-gilbert` |
 | ClientManager | `master` / `gilbert` |
-| Quality gate | ruff · `mypy --strict` (63 files) · **588 NAS tests** · **161 ClientManager tests** · no migration drift |
+| Quality gate | ruff · `mypy --strict` (63 files) · **603 NAS tests** · **161 ClientManager tests** · no migration drift |
 | Staging | live, syncing a production Catalyst 3650 every 15 min |
 | ClientManager UI | behind `NETOPS_ENABLED`, **default off** — see below |
 
@@ -80,7 +80,7 @@ cd nas
 docker compose up -d                      # PostgreSQL on 127.0.0.1:5434
 export PATH="$PWD/.venv/bin:$PATH"
 export NAS_TEST_DATABASE_URL=postgresql+asyncpg://nas:nas@localhost:5434/nas_test
-pytest                                    # 588
+pytest                                    # 603
 ```
 
 Port 5434 is deliberate: 5432 is ClientManager's PostgreSQL, 5433 belongs to an unrelated
@@ -105,21 +105,34 @@ Hostname markers inject driver failures: `-unreachable`, `-badauth`, `-garbled`.
 
 `audit_log` records `sync.trigger` (success, 409, and unexpected failure) and
 `auth.denied`. Attribution is **two columns on purpose** — `api_key_name` is what NAS
-authenticated, `actor` is what the caller asserted via `X-Actor` and is not verified.
-ClientManager forwards the logged-in user's email on "Sync Now".
+authenticated, `actor` is what the caller asserted and is not verified.
+
+**All three triggers are covered.** The write is in `SyncService.run`, the choke point
+every path goes through, so a new caller is audited by construction:
+
+| Trigger | actor |
+|---|---|
+| API | `X-Actor`, forwarded by ClientManager from the logged-in user |
+| CLI | `SUDO_USER`, else the login name — verified live on App-Server |
+| Scheduler | none; the entry is `unattributed`, which is the honest record |
+
+`detail->>'trigger'` separates them, so the ~96 scheduled entries/day can be filtered
+out of a report without being left out of the record.
 
 Reads are not audited (the access log already has them) and neither are authentication
 failures (nothing to attribute, and trivially floodable). Readable at
 `GET /api/v1/audit` under a new `audit:read` scope, which is **not** in the read-only
 bundle ClientManager holds.
 
-Two behaviours to know before changing it:
+Three behaviours to know before changing it:
 
 - `AuditService` commits on **its own session**, so a rejected sync's entry survives
   the request rollback. Remove that and the 409 stops being recorded.
 - A failed audit write **does not fail the request** — it logs at `error` with the
   whole entry inline. By then the switches have been polled, so a 500 would report
   failure for work that succeeded and the retry would poll them again.
+- `SyncService`'s `audit` argument is **required**. An audit gap must not be creatable
+  by forgetting a parameter, so mypy rejects any construction site that omits it.
 
 **Deployment note:** the migration adds a table; run `nas db upgrade` on App-Server.
 Nothing else is needed — the actor header is optional and old callers keep working.
@@ -140,6 +153,36 @@ Nothing else is needed — the actor header is optional and old callers keep wor
 5. **Mint an operator key with `audit:read`** if anyone needs to read the trail
    through the API rather than psql.
 6. **Security review** of the whole Phase 1 surface.
+
+## After Milestone 4: Phase 2 — VLAN usage mapping and tagging
+
+**Designed on paper only. Do not start building it yet.** Full plan in
+[roadmap.md](roadmap.md#phase-2--vlan-usage-mapping-and-tagging).
+
+The short version, because it explains a limitation people will ask about:
+
+- The switch NAS reads has 69 VLANs and **almost none are mapped to anything**.
+  `show vlan brief` reports access ports only, so 68 of 69 come back with no ports —
+  they are trunk-carried. "Is 1234 free?" works today; "used by what?" does not,
+  because the data is not readable from this device.
+- Gilbert is getting access to switches with full configuration. **Phase 2 is blocked
+  on that hardware, not on us** — building it against the one switch we have would
+  produce a feature that looks right in development and reports almost nothing in
+  production.
+- Then: read trunk membership (step 1, read-only), relate VLANs to
+  computes/environments (step 2), and let support engineers tag VLANs themselves
+  (step 3 — the first **write** in the system, to NAS's database only, never to a
+  device).
+
+Two things to settle before any schema work, because each changes the design:
+where the compute/environment inventory lives (NAS must not become a second stale
+source of truth), and how an engineer's *assertion* is kept visually distinct from
+something discovery *observed*. A stale assertion presented as fact is the same trap
+the lookup screen's staleness handling already guards against.
+
+Note step 1 causes a **one-off churn event**: including trunk members changes every
+interface signature, so the next sync reports every Cisco VLAN as `updated` exactly
+once. Expect it rather than debugging it.
 
 ## Known gaps, deliberately deferred
 

@@ -415,6 +415,28 @@ production hardware, so accountability is the point of recording it at all.
 Keeping both makes the limit visible in the data rather than buried in a document.
 `AuditEntry.attribution` renders it as "actor via key" for exactly that reason.
 
+### The audit write belongs in the service, not the route
+
+First implemented at the API route, which recorded only HTTP-triggered syncs. The
+scheduler and `nas sync run` produced no entry at all.
+
+**Why that was wrong.** `sync_runs` still recorded those runs, so nothing was
+invisible — but attribution existed only for the API path, and the CLI is the least
+supervised route to a production switch. Someone with shell access could sync a
+production device and the trail would name nobody. Auditing the best-supervised path
+and skipping the worst is close to backwards.
+
+**The fix.** `SyncService.run` is the single choke point every trigger passes through,
+so the write moved there. A future caller is audited by construction rather than by
+remembering. The route's remaining job is to supply what the service cannot know —
+the authenticated key, the forwarded actor, the client address — which travels as one
+`AuditContext` rather than four loose parameters.
+
+**Cost.** `SyncService` now depends on `AuditService`, and that dependency is
+**required**, not optional with a `None` default. An audit gap should not be creatable
+by omitting an argument, so mypy fails every construction site that forgets it. The
+same fail-closed reasoning as `NETOPS_ENABLED` defaulting to False.
+
 ### Audit entries commit on their own session
 
 `AuditService` takes a session *factory*, not a session, and commits independently of

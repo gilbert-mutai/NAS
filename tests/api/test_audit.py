@@ -1,12 +1,13 @@
 """The audit trail: what gets written, and reading it back.
 
-`POST /sync` is the only Phase 1 endpoint that reaches a switch, so it is the one
-that has to be answerable for. These tests pin down that every outcome is recorded —
-success, rejection and crash — and that the attribution distinguishes the key NAS
-authenticated from the human the caller merely claimed.
+Covers the two things the API layer still owns: forwarding attribution to the
+service, and auditing a scope denial (which happens during dependency resolution, so
+the route never runs and cannot record it). Plus reading the trail back.
 
-Transaction behaviour (an audit row surviving a request that rolls back) needs a real
-database and lives in tests/integration/test_audit_repository.py.
+The sync audit *write* lives in SyncService — see
+tests/integration/test_sync_service.py::TestEveryTriggerIsAudited, which proves every
+trigger is recorded, not just the HTTP one. Transaction behaviour (an entry surviving
+a request that rolls back) is in tests/integration/test_audit_repository.py.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from nas.core.security import GeneratedApiKey, Scope, generate_api_key
-from nas.domain.entities import ApiKey, AuditEntry, SyncRun
-from nas.domain.enums import AuditAction, AuditOutcome, SyncTrigger
+from nas.core.security import Scope, generate_api_key
+from nas.domain.entities import ApiKey, AuditEntry
+from nas.domain.enums import AuditAction, AuditOutcome
+from nas.services.audit import AuditContext
 from tests.fakes import FakeAuditService, FakeSyncService, InMemoryAuditRepository
 
 SYNC_PATH = "/api/v1/sync"
@@ -27,184 +29,78 @@ AUDIT_PATH = "/api/v1/audit"
 ACTOR = "gilbert@angani.co"
 
 
-class TestSyncTriggerIsAudited:
-    async def test_a_successful_trigger_is_recorded(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService
+class TestTheRouteForwardsAttribution:
+    """What the route is responsible for now.
+
+    The audit *write* moved into SyncService, so that every trigger — API, scheduler,
+    CLI — is recorded at one choke point. What is left here is the route's actual job:
+    supplying the context the service cannot know. Whether the entry then lands is the
+    service's contract, proved against a real database in
+    tests/integration/test_sync_service.py::TestEveryTriggerIsAudited.
+    """
+
+    async def test_the_actor_header_is_forwarded(
+        self, auth_client: AsyncClient, sync_service: FakeSyncService
     ) -> None:
         response = await auth_client.post(SYNC_PATH, headers={"X-Actor": ACTOR})
         assert response.status_code == 202
+        context = sync_service.calls[-1]["audit_context"]
+        assert isinstance(context, AuditContext)
+        assert context.actor == ACTOR
 
-        entry = audit_service.only
-        assert entry.action is AuditAction.SYNC_TRIGGER
-        assert entry.outcome is AuditOutcome.SUCCESS
-        assert entry.actor == ACTOR
-
-    async def test_the_entry_points_at_the_run_it_started(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService
+    async def test_the_authenticated_key_is_forwarded_alongside_the_actor(
+        self, auth_client: AsyncClient, sync_service: FakeSyncService, api_key: ApiKey
     ) -> None:
-        """Without this the trail says a sync happened but not which one, and the
-        counters in sync_runs cannot be tied to the person who asked for it."""
-        body = (await auth_client.post(SYNC_PATH, headers={"X-Actor": ACTOR})).json()
-        entry = audit_service.only
-        assert entry.target_type == "sync_run"
-        assert entry.target_id == str(body["id"])
-
-    async def test_both_the_key_and_the_actor_are_recorded(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService, api_key: ApiKey
-    ) -> None:
-        """The key is what NAS proved; the actor is what it was told. Storing only
-        the actor would present an unverified claim as fact."""
+        """Both, not either. The key is what NAS proved; the actor is what it was
+        told. Forwarding only the actor would let the service record an unverified
+        claim with nothing to weigh it against."""
         await auth_client.post(SYNC_PATH, headers={"X-Actor": ACTOR})
-        entry = audit_service.only
-        assert entry.api_key_id == api_key.id
-        assert entry.api_key_name == api_key.name
-        assert entry.actor == ACTOR
-        assert entry.attribution == f"{ACTOR} via {api_key.name}"
+        context = sync_service.calls[-1]["audit_context"]
+        assert isinstance(context, AuditContext)
+        assert context.api_key_id == api_key.id
+        assert context.api_key_name == api_key.name
+        assert context.actor == ACTOR
 
-    async def test_a_missing_actor_header_still_records_the_key(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService, api_key: ApiKey
+    async def test_a_missing_actor_header_still_forwards_the_key(
+        self, auth_client: AsyncClient, sync_service: FakeSyncService, api_key: ApiKey
     ) -> None:
-        """A caller that does not forward an identity must not silently skip the
-        audit entry — the sync still touched a switch."""
         await auth_client.post(SYNC_PATH)
-        entry = audit_service.only
-        assert entry.actor is None
-        assert entry.api_key_name == api_key.name
-        assert entry.attribution == api_key.name
+        context = sync_service.calls[-1]["audit_context"]
+        assert isinstance(context, AuditContext)
+        assert context.actor is None
+        assert context.api_key_name == api_key.name
 
-    async def test_the_correlation_id_ties_the_entry_to_the_request(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService
+    async def test_the_source_ip_is_forwarded(
+        self, auth_client: AsyncClient, sync_service: FakeSyncService
     ) -> None:
+        await auth_client.post(SYNC_PATH)
+        context = sync_service.calls[-1]["audit_context"]
+        assert isinstance(context, AuditContext)
+        assert context.source_ip == "127.0.0.1"
+
+    async def test_the_request_id_becomes_the_runs_correlation_id(
+        self, auth_client: AsyncClient, sync_service: FakeSyncService
+    ) -> None:
+        """One id spans the ClientManager request, NAS's logs, the sync_runs row and
+        the audit entry. Passing it explicitly is what ties them together — without
+        it the service would mint its own and the trail would not join up."""
         response = await auth_client.post(
-            SYNC_PATH, headers={"X-Actor": ACTOR, "X-Request-ID": "clientmanager-abc-123"}
+            SYNC_PATH, headers={"X-Request-ID": "clientmanager-abc-123"}
         )
-        assert audit_service.only.correlation_id == "clientmanager-abc-123"
+        assert sync_service.calls[-1]["correlation_id"] == "clientmanager-abc-123"
         assert response.headers["X-Request-ID"] == "clientmanager-abc-123"
 
-    async def test_the_source_ip_is_recorded(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService
+    async def test_the_raw_header_is_forwarded_unsanitised(
+        self, auth_client: AsyncClient, sync_service: FakeSyncService
     ) -> None:
-        await auth_client.post(SYNC_PATH)
-        assert audit_service.only.source_ip == "127.0.0.1"
-
-    async def test_requested_switch_ids_are_recorded(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService
-    ) -> None:
-        """A targeted sync and a full sync are different actions; the trail should
-        say which was asked for."""
-        await auth_client.post(SYNC_PATH, json={"switch_ids": [1, 2]})
-        detail = audit_service.only.detail
-        assert detail is not None
-        assert detail["switch_ids"] == [1, 2]
-
-    async def test_a_hostile_actor_is_sanitised_before_storage(
-        self, auth_client: AsyncClient, audit_service: FakeAuditService
-    ) -> None:
-        """Sent as a real header, because that is the only way it arrives.
-
-        Sanitising lives inside AuditService rather than at the edge, so no call path
-        can bypass it. The payload below carries a newline: an intermediary would
-        normally reject that, but nothing in NAS may depend on an intermediary having
-        done so.
+        """Deliberate, and the reason sanitisation lives in AuditService rather than
+        at the edge: one implementation covers the API, the CLI and any future caller.
+        A route that cleaned the value itself would be a second place to keep correct.
         """
-        await auth_client.post(
-            SYNC_PATH,
-            headers={"X-Actor": "gilbert@angani.co\r\nX-Injected: yes\x1b[31m<script>"},
-        )
-        actor = audit_service.only.actor
-        assert actor is not None
-        assert actor.startswith("gilbert@angani.co")
-        for forbidden in ("\n", "\r", "\x1b", "<", ">", ":"):
-            assert forbidden not in actor, f"{forbidden!r} survived sanitisation"
-
-    async def test_the_run_still_succeeds_when_the_audit_write_fails(
-        self,
-        app_factory: object,
-        settings: object,
-        generated_key: GeneratedApiKey,
-    ) -> None:
-        """The switches have already been polled by the time the entry is written.
-        Returning 500 would report a failure for work that succeeded, and the
-        caller's retry would poll them again."""
-        from nas.api import deps
-
-        app: FastAPI = app_factory(settings)  # type: ignore[operator]
-        app.dependency_overrides[deps.get_audit_service] = lambda: FakeAuditService(fail=True)
-        async with AsyncClient(
-            transport=ASGITransport(app=app, client=("127.0.0.1", 1234)),
-            base_url="http://nas.test",
-            headers={"X-API-Key": generated_key.plaintext},
-        ) as client:
-            response = await client.post(SYNC_PATH)
-        assert response.status_code == 202
-
-
-class TestRejectedSyncIsAudited:
-    async def test_a_409_is_recorded_as_an_error(
-        self,
-        app_factory: object,
-        settings: object,
-        generated_key: GeneratedApiKey,
-        audit_service: FakeAuditService,
-    ) -> None:
-        """A rejected attempt is as informative as an accepted one — a burst of them
-        is somebody clicking a button that appears not to work.
-
-        This is also why AuditService commits on its own session: the 409 raises, so
-        the request transaction rolls back, and an entry written on it would vanish.
-        """
-        app: FastAPI = app_factory(settings)  # type: ignore[operator]
-        app.state.sync_service = FakeSyncService(conflict=True)
-        async with AsyncClient(
-            transport=ASGITransport(app=app, client=("127.0.0.1", 1234)),
-            base_url="http://nas.test",
-            headers={"X-API-Key": generated_key.plaintext, "X-Actor": ACTOR},
-        ) as client:
-            response = await client.post(SYNC_PATH)
-
-        assert response.status_code == 409
-        entry = audit_service.only
-        assert entry.action is AuditAction.SYNC_TRIGGER
-        assert entry.outcome is AuditOutcome.ERROR
-        assert entry.actor == ACTOR
-        assert entry.target_id is None, "nothing was started, so there is no run to point at"
-
-    async def test_an_unexpected_failure_is_recorded(
-        self,
-        app_factory: object,
-        settings: object,
-        generated_key: GeneratedApiKey,
-        audit_service: FakeAuditService,
-    ) -> None:
-        """'A sync was started and never finished' is exactly what an operator needs
-        to see, so a crash must not leave the trail silent."""
-
-        class ExplodingSyncService(FakeSyncService):
-            async def run(
-                self,
-                *,
-                trigger: SyncTrigger,
-                correlation_id: str | None = None,
-                switch_ids: list[int] | None = None,
-            ) -> SyncRun:
-                raise RuntimeError("driver blew up")
-
-        app: FastAPI = app_factory(settings)  # type: ignore[operator]
-        app.state.sync_service = ExplodingSyncService()
-        transport = ASGITransport(app=app, client=("127.0.0.1", 1234), raise_app_exceptions=False)
-        async with AsyncClient(
-            transport=transport,
-            base_url="http://nas.test",
-            headers={"X-API-Key": generated_key.plaintext, "X-Actor": ACTOR},
-        ) as client:
-            response = await client.post(SYNC_PATH)
-
-        assert response.status_code == 500
-        entry = audit_service.only
-        assert entry.outcome is AuditOutcome.ERROR
-        detail = entry.detail
-        assert detail is not None
-        assert detail["error"] == "RuntimeError"
+        await auth_client.post(SYNC_PATH, headers={"X-Actor": "gilbert@angani.co\r\n<script>"})
+        context = sync_service.calls[-1]["audit_context"]
+        assert isinstance(context, AuditContext)
+        assert "<script>" in (context.actor or ""), "the route must not pre-clean"
 
 
 class TestScopeDenialIsAudited:

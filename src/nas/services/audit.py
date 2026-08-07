@@ -20,6 +20,7 @@ degradation.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -52,6 +53,27 @@ def sanitize_actor(raw: str | None) -> str | None:
     if not cleaned:
         return None
     return cleaned[:MAX_ACTOR_LENGTH]
+
+
+@dataclass(frozen=True, slots=True)
+class AuditContext:
+    """Who to attribute an action to, carried from the edge to wherever it is recorded.
+
+    A single object rather than four loose parameters, because it is threaded through
+    ``SyncService.run`` and every caller would otherwise have to know the full set.
+    Adding a field later does not touch the call sites that do not supply it.
+
+    Empty by default, which is the honest representation of machine-initiated work:
+    the scheduler has no actor, no client address and no API key.
+
+    ``api_key_*`` is what NAS authenticated; ``actor`` is what the caller asserted.
+    Both are carried because the distinction is the point — see AuditEntry.
+    """
+
+    actor: str | None = None
+    source_ip: str | None = None
+    api_key_id: int | None = None
+    api_key_name: str | None = None
 
 
 class AuditService:
